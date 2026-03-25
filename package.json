@@ -1,0 +1,15 @@
+{
+  "name": "pi-boost-prompt",
+  "version": "2.0.0",
+  "description": "PI extension that learns from project history to optimize prompts via /boost",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
+  }
+}
