@@ -20,7 +20,7 @@
  * Test:    pi -e /path/to/pi-prompt-playbook-boost/src/index.ts
  */
 
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, BorderedLoader } from "@mariozechner/pi-coding-agent";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -33,7 +33,8 @@ import {
   invalidateCache,
   type PlaybookSection,
 } from "./playbook";
-import { detectIntent, getIntentWeights, getIntentPrefix } from "./intent";
+import { detectIntent, getIntentWeights } from "./intent";
+import { rewritePrompt } from "./rewriter";
 import { analyzeGitHistory, getLastCommitHash } from "./setup/git-analyzer";
 import { analyzeSessionHistory } from "./setup/session-analyzer";
 import { analyzeCodebase } from "./setup/codebase-analyzer";
@@ -116,6 +117,53 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
 
   function isSetupComplete(): boolean {
     return state?.setupComplete === true && playbookContent !== null;
+  }
+
+  // ── LLM Prompt Rewriting ──────────────────────────────────
+
+  /**
+   * Rewrite a prompt using the LLM, showing a cancellable loader in the TUI.
+   * Returns the rewritten prompt text, or null if cancelled.
+   */
+  async function rewritePromptWithLoader(
+    ctx: ExtensionContext,
+    rawPrompt: string,
+    intent: import("./intent").TaskIntent,
+    boostContext: string,
+  ): Promise<string | null> {
+    if (!ctx.hasUI) {
+      // No TUI — call rewriter directly without loader
+      const result = await rewritePrompt(ctx, rawPrompt, intent, boostContext);
+      return result?.rewrittenPrompt ?? null;
+    }
+
+    let taskError: Error | undefined;
+
+    const outcome = await ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+      const { BorderedLoader } = require("@mariozechner/pi-coding-agent") as { BorderedLoader: any };
+      const loader = new BorderedLoader(tui, theme, "⚡ Rewriting prompt with LLM...", { cancellable: true });
+      loader.onAbort = () => done(null);
+
+      void rewritePrompt(ctx, rawPrompt, intent, boostContext, loader.signal)
+        .then((result) => {
+          if (!loader.signal.aborted) {
+            done(result?.rewrittenPrompt ?? null);
+          }
+        })
+        .catch((error: unknown) => {
+          if (loader.signal.aborted) {
+            done(null);
+            return;
+          }
+          taskError = error instanceof Error ? error : new Error("Prompt rewrite failed.");
+          done(null);
+        });
+
+      return loader;
+    });
+
+    if (taskError) throw taskError;
+    return outcome;
   }
 
   // ── Code Block Preservation ────────────────────────────────
@@ -324,8 +372,8 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
     }
 
     // Main boost — two-step flow (default) or auto-send:
-    //   Default:   /boost <message> → rewrite, put in editor, user reviews and sends
-    //   Auto-send: /boost <message> → rewrite and send immediately
+    //   Default:   /boost <message> → LLM rewrites prompt, put in editor with context, user reviews and sends
+    //   Auto-send: /boost <message> → LLM rewrites and sends immediately
     const boostMatch = text.match(/^\/boost\s+(.+)/s);
     if (boostMatch) {
       const rawInput = boostMatch[1].trim();
@@ -358,7 +406,7 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
         relevant = selectRelevantSections(playbookSections, cleaned, weights);
       }
 
-      pendingInjection = buildInjectionBlock(relevant);
+      const boostContext = buildInjectionBlock(relevant);
 
       // Prepare interaction tracking
       interactionSeq++;
@@ -379,32 +427,62 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
         intent,
       };
 
-      // Build boosted prompt with intent-aware prefix and restored code blocks
-      const boostedText = restoreCodeBlocks(getIntentPrefix(intent, cleaned), blocks);
-
       const sectionNames = relevant
         .filter((s) => !["Stats", "Project Identity"].includes(s.heading))
         .map((s) => s.heading)
         .slice(0, 3)
         .join(", ");
 
-      // Auto-send: inject and send immediately
+      // Restore code blocks for the raw prompt before rewriting
+      const promptForRewrite = restoreCodeBlocks(rawPrompt, blocks);
+
+      // Rewrite the prompt using the LLM
+      ctx.ui.setStatus("boost", "⚡ Boost (rewriting prompt...)");
+
+      let rewrittenPrompt: string;
+      try {
+        const result = await rewritePromptWithLoader(ctx, promptForRewrite, intent, boostContext);
+        if (result === null) {
+          // User cancelled
+          currentInteraction = null;
+          ctx.ui.setStatus("boost", await buildStatusText());
+          ctx.ui.notify("⚡ Boost cancelled.", "info");
+          return { action: "handled" as const };
+        }
+        rewrittenPrompt = result;
+      } catch (e) {
+        // LLM rewrite failed — fall back to original prompt with context
+        ctx.ui.notify(
+          `⚡ Prompt rewrite failed: ${e instanceof Error ? e.message : e}\n` +
+          `   Using original prompt with playbook context.`,
+          "warning",
+        );
+        rewrittenPrompt = promptForRewrite;
+      }
+
+      // Build the final editor text: rewritten prompt + visible boost-context
+      const editorText = `${rewrittenPrompt}\n\n${boostContext}`;
+
+      // Auto-send: send immediately
       if (state?.autosend) {
         originalPrompt = null;
         boostedPromptInEditor = false;
+        pendingInjection = null; // Context is in the message itself now
         ctx.ui.setStatus("boost", `⚡ Boost (${interactionSeq})`);
         ctx.ui.notify(`⚡ Boosted [${intent}]: ${sectionNames || "playbook defaults"}`, "info");
-        return { action: "transform" as const, text: boostedText };
+        return { action: "transform" as const, text: editorText };
       }
 
-      // Two-step editor flow (default): put boosted text in editor for review
+      // Two-step editor flow (default): put rewritten prompt + context in editor for review
       originalPrompt = rawPrompt;
       boostedPromptInEditor = true;
-      ctx.ui.setEditorText(boostedText);
+      pendingInjection = null; // Context is visible in editor, not hidden in system prompt
+      ctx.ui.setEditorText(editorText);
 
       ctx.ui.notify(
         `⚡ Boosted [${intent}]: ${sectionNames || "playbook defaults"}\n` +
-        `   Review the prompt, then press Enter to send. Ctrl+Shift+X to revert.`,
+        `   Review the improved prompt + playbook context, then press Enter to send.\n` +
+        `   Ctrl+Shift+X to revert to original.`,
         "info",
       );
       ctx.ui.setStatus("boost", "⚡ Boost (review prompt — Enter to send, Ctrl+Shift+X to revert)");
@@ -862,23 +940,22 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
 
     const intent = detectIntent(rawPrompt);
     const weights = getIntentWeights(intent);
-    const { cleaned, blocks } = preserveCodeBlocks(rawPrompt);
+    const { cleaned } = preserveCodeBlocks(rawPrompt);
     const relevant = selectRelevantSections(playbookSections, cleaned, weights);
-    const injection = buildInjectionBlock(relevant);
-    const boostedText = restoreCodeBlocks(getIntentPrefix(intent, cleaned), blocks);
+    const boostContext = buildInjectionBlock(relevant);
 
     const lines = [
       "",
       "  ⚡ Boost Preview",
       `  ${"─".repeat(40)}`,
       `  Intent:  ${intent}`,
-      `  Sections injected (${relevant.length}):`,
+      `  Sections to inject (${relevant.length}):`,
       ...relevant.map((s) => `    • ${s.heading}`),
       "",
-      `  ── Injection size: ${injection.length} chars ──`,
+      `  ── Boost context size: ${boostContext.length} chars ──`,
       "",
-      `  ── Restructured prompt ──`,
-      ...boostedText.split("\n").map((l) => `  ${l}`),
+      `  Note: /boost will rewrite the prompt using the LLM with this context.`,
+      `  The rewritten prompt + boost-context will appear in the editor for review.`,
       "",
     ];
 

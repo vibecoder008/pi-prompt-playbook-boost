@@ -17,9 +17,29 @@ declare module "@mariozechner/pi-coding-agent" {
     exec(
       command: string,
       args: string[],
-      options?: { signal?: AbortSignal; timeout?: number },
+      options?: { signal?: AbortSignal; timeout?: number; cwd?: string },
     ): Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
     sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+  }
+
+  export interface ModelRegistry {
+    find(provider: string, id: string): Model | undefined;
+    getApiKey(model: Model): Promise<string | undefined>;
+  }
+
+  export interface Model {
+    provider: string;
+    id: string;
+    name: string;
+    maxTokens: number;
+    [key: string]: any;
+  }
+
+  /** Loader for cancellable TUI overlays. */
+  export class BorderedLoader {
+    signal: AbortSignal;
+    onAbort?: () => void;
+    constructor(tui: any, theme: any, message: string, options?: { cancellable?: boolean });
   }
 
   export interface ExtensionContext {
@@ -27,6 +47,9 @@ declare module "@mariozechner/pi-coding-agent" {
     ui: ExtensionUI;
     hasUI: boolean;
     sessionManager: any;
+    model: Model | undefined;
+    modelRegistry: ModelRegistry;
+    isIdle(): boolean;
   }
 
   export interface ExtensionCommandContext extends ExtensionContext {
@@ -41,5 +64,38 @@ declare module "@mariozechner/pi-coding-agent" {
     setStatus(key: string, text: string | undefined): void;
     setEditorText(text: string): void;
     getEditorText(): string;
+    custom<T>(factory: (tui: any, theme: any, keybindings: any, done: (value: T) => void) => any): Promise<T>;
   }
+}
+
+declare module "@mariozechner/pi-ai" {
+  export interface Api {
+    [key: string]: any;
+  }
+
+  export interface Message {
+    role: "user" | "assistant";
+    timestamp: number;
+    content: MessageContent[];
+  }
+
+  export type MessageContent =
+    | { type: "text"; text: string }
+    | { type: "image"; source: any };
+
+  export interface Context {
+    systemPrompt: string;
+    messages: Message[];
+  }
+
+  export interface AssistantMessage {
+    content: { type: "text"; text: string }[];
+    stopReason?: string;
+  }
+
+  export function complete(
+    model: any,
+    context: Context,
+    options?: { apiKey?: string; signal?: AbortSignal; maxTokens?: number },
+  ): Promise<AssistantMessage>;
 }
