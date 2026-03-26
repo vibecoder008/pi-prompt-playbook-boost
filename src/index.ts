@@ -1,19 +1,22 @@
 /**
- * pi-boost-prompt v2 — Main extension entry point
+ * pi-prompt-playbook-boost v2 — Main extension entry point
  *
  * Learns from project history to optimize prompts.
  *
  * Commands:
- *   /boost first setup   — Scan project, generate playbook
- *   /boost <message>     — Boost and send a prompt
- *   /boost-preview <msg> — Preview without sending
- *   /boost-stats         — Show learning progress
- *   /boost-review        — Review pending playbook updates
- *   /boost-refresh       — Incremental re-scan
- *   /boost-reset         — Delete playbook and start over
+ *   /boost-first-setup       — Scan project, generate playbook
+ *   /boost <message>         — Boost and send a prompt
+ *   /boost --sections "a,b"  — Boost with forced playbook sections
+ *   /boost-preview <msg>     — Preview without sending
+ *   /boost-stats             — Show learning progress
+ *   /boost-history           — Show recent boosted prompts
+ *   /boost-config            — Configure boost settings
+ *   /boost-review            — Review pending playbook updates
+ *   /boost-refresh           — Incremental re-scan
+ *   /boost-reset             — Delete playbook and start over
  *
- * Install: ln -s /path/to/pi-boost-prompt ~/.pi/agent/extensions/pi-boost-prompt
- * Test:    pi -e /path/to/pi-boost-prompt/src/index.ts
+ * Install: ln -s /path/to/pi-prompt-playbook-boost ~/.pi/agent/extensions/pi-prompt-playbook-boost
+ * Test:    pi -e /path/to/pi-prompt-playbook-boost/src/index.ts
  */
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
@@ -29,6 +32,7 @@ import {
   invalidateCache,
   type PlaybookSection,
 } from "./playbook";
+import { detectIntent, getIntentWeights, getIntentPrefix } from "./intent";
 import { analyzeGitHistory, getLastCommitHash } from "./setup/git-analyzer";
 import { analyzeSessionHistory } from "./setup/session-analyzer";
 import { analyzeCodebase } from "./setup/codebase-analyzer";
@@ -57,7 +61,7 @@ function safeJsonParse<T>(text: string): T | null {
 
 // ─── Extension ───────────────────────────────────────────────────
 
-export default function boostPromptExtension(pi: ExtensionAPI) {
+export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
   // ── Runtime state ──────────────────────────────────────────
   let boostDir = "";
   let state: BoostState | null = null;
@@ -69,6 +73,10 @@ export default function boostPromptExtension(pi: ExtensionAPI) {
   let sessionStartHash: string | null = null;
   let currentSessionId: string | null = null;
   let exec: ExecFn;
+
+  // Two-step boost state: original prompt stored for revert
+  let originalPrompt: string | null = null;
+  let boostedPromptInEditor = false;
 
   // ── Helpers ────────────────────────────────────────────────
 
@@ -107,6 +115,83 @@ export default function boostPromptExtension(pi: ExtensionAPI) {
 
   function isSetupComplete(): boolean {
     return state?.setupComplete === true && playbookContent !== null;
+  }
+
+  // ── Code Block Preservation ────────────────────────────────
+
+  function preserveCodeBlocks(text: string): { cleaned: string; blocks: string[] } {
+    const blocks: string[] = [];
+    const cleaned = text.replace(/```[\s\S]*?```/g, (match) => {
+      blocks.push(match);
+      return `[CODE_BLOCK_${blocks.length}]`;
+    });
+    return { cleaned, blocks };
+  }
+
+  function restoreCodeBlocks(text: string, blocks: string[]): string {
+    let result = text;
+    for (let i = 0; i < blocks.length; i++) {
+      result = result.replace(`[CODE_BLOCK_${i + 1}]`, blocks[i]);
+    }
+    return result;
+  }
+
+  // ── Flag Parsing ───────────────────────────────────────────
+
+  function parseSectionsFlag(text: string): { sections: string[] | null; remaining: string } {
+    const match = text.match(/--sections\s+"([^"]+)"\s*/);
+    if (!match) return { sections: null, remaining: text };
+    const sections = match[1].split(",").map((s) => s.trim()).filter(Boolean);
+    const remaining = text.replace(match[0], "").trim();
+    return { sections, remaining };
+  }
+
+  function findForcedSections(all: PlaybookSection[], names: string[]): PlaybookSection[] {
+    const forced: PlaybookSection[] = [];
+    for (const name of names) {
+      const lower = name.toLowerCase();
+      const match = all.find(
+        (s) => s.heading.toLowerCase().includes(lower) && !forced.includes(s),
+      );
+      if (match) forced.push(match);
+    }
+    return forced;
+  }
+
+  // ── Status Bar ─────────────────────────────────────────────
+
+  async function buildStatusText(): Promise<string> {
+    if (!isSetupComplete()) return "⚡ Boost (run /boost-first-setup)";
+
+    let text = "⚡ Boost";
+    const count = state?.interactionCount ?? 0;
+
+    if (count > 0) {
+      try {
+        const recent = await readRecentInteractions(boostDir, 50);
+        const scores = recent.map((i) => scoreInteraction(i));
+        if (scores.length > 0) {
+          const successCount = scores.filter((s) => s.composite >= 0.7).length;
+          const successRate = Math.round((successCount / scores.length) * 100);
+          text += ` · ${successRate}% · ${count} prompts`;
+        }
+      } catch {
+        text += ` · ${count} prompts`;
+      }
+    }
+
+    // Stale check: >7 days old or scan hash mismatch
+    let isStale = false;
+    if (state?.lastUpdated) {
+      const daysSince = (Date.now() - new Date(state.lastUpdated).getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSince > 7) isStale = true;
+    }
+    if (sessionStartHash && state?.lastScanHash && sessionStartHash !== state.lastScanHash) {
+      isStale = true;
+    }
+    if (isStale) text += " · stale";
+
+    return text;
   }
 
   // ── Session Lifecycle ──────────────────────────────────────
@@ -150,12 +235,29 @@ export default function boostPromptExtension(pi: ExtensionAPI) {
       }
     }
 
-    // Set footer status
-    if (isSetupComplete()) {
-      ctx.ui.setStatus("boost", "⚡ Boost");
-    } else {
-      ctx.ui.setStatus("boost", "⚡ Boost (run /boost first setup)");
+    // Freshness warning
+    if (state?.setupComplete && state.lastUpdated) {
+      const daysSince = Math.floor(
+        (Date.now() - new Date(state.lastUpdated).getTime()) / (1000 * 60 * 60 * 24),
+      );
+      if (daysSince > 7) {
+        ctx.ui.notify(`⚡ Playbook is ${daysSince} days old. Run /boost-refresh to update.`, "warning");
+      }
     }
+
+    // Pending updates warning
+    if (state?.setupComplete) {
+      try {
+        const raw = await readFile(join(boostDir, "pending-updates.json"), "utf-8");
+        const parsed = safeJsonParse<any[]>(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          ctx.ui.notify(`⚡ ${parsed.length} pending playbook updates. Run /boost-review.`, "info");
+        }
+      } catch { /* no pending updates file */ }
+    }
+
+    // Set dynamic footer status
+    ctx.ui.setStatus("boost", await buildStatusText());
   });
 
   pi.on("session_shutdown", async () => {
@@ -208,7 +310,7 @@ export default function boostPromptExtension(pi: ExtensionAPI) {
     const text = event.text.trim();
 
     // Setup command
-    if (/^\/boost\s+(first\s+)?setup$/i.test(text)) {
+    if (/^\/boost-first-setup$/i.test(text)) {
       await runSetup(ctx);
       return { action: "handled" as const };
     }
@@ -220,55 +322,125 @@ export default function boostPromptExtension(pi: ExtensionAPI) {
       return { action: "handled" as const };
     }
 
-    // Main boost
+    // Main boost — two-step flow (default) or auto-send:
+    //   Default:   /boost <message> → rewrite, put in editor, user reviews and sends
+    //   Auto-send: /boost <message> → rewrite and send immediately
     const boostMatch = text.match(/^\/boost\s+(.+)/s);
-    if (!boostMatch) return { action: "continue" as const };
+    if (boostMatch) {
+      const rawInput = boostMatch[1].trim();
 
-    const rawPrompt = boostMatch[1].trim();
+      if (!isSetupComplete()) {
+        ctx.ui.notify("⚡ No playbook found. Run /boost-first-setup first.", "warning");
+        return { action: "continue" as const };
+      }
 
-    if (!isSetupComplete()) {
-      ctx.ui.notify("⚡ No playbook found. Run /boost first setup first.", "warning");
+      // Parse --sections flag
+      const { sections: forcedSectionNames, remaining: rawPrompt } = parseSectionsFlag(rawInput);
+
+      // Detect intent and get section weights
+      const intent = detectIntent(rawPrompt);
+      const weights = getIntentWeights(intent);
+
+      // Preserve code blocks before keyword matching
+      const { cleaned, blocks } = preserveCodeBlocks(rawPrompt);
+
+      // Select relevant sections (with optional forced overrides)
+      let relevant: PlaybookSection[];
+      if (forcedSectionNames) {
+        const forced = findForcedSections(playbookSections, forcedSectionNames);
+        const forcedHeadings = new Set(forced.map((s) => s.heading));
+        const unforcedSections = playbookSections.filter((s) => !forcedHeadings.has(s.heading));
+        const autoSelected = selectRelevantSections(unforcedSections, cleaned, weights);
+        const autoHeadings = new Set(autoSelected.map((s) => s.heading));
+        relevant = [...autoSelected, ...forced.filter((s) => !autoHeadings.has(s.heading))];
+      } else {
+        relevant = selectRelevantSections(playbookSections, cleaned, weights);
+      }
+
+      pendingInjection = buildInjectionBlock(relevant);
+
+      // Prepare interaction tracking
+      interactionSeq++;
+      if (!currentSessionId) {
+        currentSessionId = sessionStartHash ?? `sess_${Date.now()}`;
+      }
+
+      currentInteraction = {
+        id: `boost_${Date.now()}_${interactionSeq}`,
+        timestamp: Date.now(),
+        sessionId: currentSessionId,
+        promptRaw: rawPrompt,
+        sectionsUsed: relevant.map((s) => s.heading),
+        turns: 0,
+        totalToolCalls: 0,
+        toolErrors: 0,
+        retried: false,
+        intent,
+      };
+
+      // Build boosted prompt with intent-aware prefix and restored code blocks
+      const boostedText = restoreCodeBlocks(getIntentPrefix(intent, cleaned), blocks);
+
+      const sectionNames = relevant
+        .filter((s) => !["Stats", "Project Identity"].includes(s.heading))
+        .map((s) => s.heading)
+        .slice(0, 3)
+        .join(", ");
+
+      // Auto-send: inject and send immediately
+      if (state?.autosend) {
+        originalPrompt = null;
+        boostedPromptInEditor = false;
+        ctx.ui.setStatus("boost", `⚡ Boost (${interactionSeq})`);
+        ctx.ui.notify(`⚡ Boosted [${intent}]: ${sectionNames || "playbook defaults"}`, "info");
+        return { action: "transform" as const, text: boostedText };
+      }
+
+      // Two-step editor flow (default): put boosted text in editor for review
+      originalPrompt = rawPrompt;
+      boostedPromptInEditor = true;
+      ctx.ui.setEditorText(boostedText);
+
+      ctx.ui.notify(
+        `⚡ Boosted [${intent}]: ${sectionNames || "playbook defaults"}\n` +
+        `   Review the prompt, then press Enter to send. Ctrl+Shift+X to revert.`,
+        "info",
+      );
+      ctx.ui.setStatus("boost", "⚡ Boost (review prompt — Enter to send, Ctrl+Shift+X to revert)");
+
+      return { action: "handled" as const };
+    }
+
+    // Step 2: user sends the boosted (or edited) prompt from the editor
+    if (boostedPromptInEditor) {
+      boostedPromptInEditor = false;
+      originalPrompt = null;
+      ctx.ui.setStatus("boost", `⚡ Boost (${interactionSeq})`);
+      // pendingInjection is already set — before_agent_start will inject it
+      // Let the text through as-is (user may have edited it)
       return { action: "continue" as const };
     }
 
-    // Select relevant sections and prepare injection
-    const relevant = selectRelevantSections(playbookSections, rawPrompt);
-    pendingInjection = buildInjectionBlock(relevant);
+    return { action: "continue" as const };
+  });
 
-    interactionSeq++;
-    if (!currentSessionId) {
-      currentSessionId = sessionStartHash ?? `sess_${Date.now()}`;
-    }
+  // ── Revert Shortcut ────────────────────────────────────────
 
-    currentInteraction = {
-      id: `boost_${Date.now()}_${interactionSeq}`,
-      timestamp: Date.now(),
-      sessionId: currentSessionId,
-      promptRaw: rawPrompt,
-      sectionsUsed: relevant.map((s) => s.heading),
-      turns: 0,
-      totalToolCalls: 0,
-      toolErrors: 0,
-      retried: false,
-    };
+  pi.registerShortcut("ctrl+shift+x", {
+    description: "Revert boosted prompt to original",
+    handler: async (ctx: ExtensionContext) => {
+      if (!boostedPromptInEditor || !originalPrompt) {
+        return; // Nothing to revert
+      }
 
-    // Notify
-    const sectionNames = relevant
-      .filter((s) => !["Stats", "Project Identity"].includes(s.heading))
-      .map((s) => s.heading)
-      .slice(0, 3)
-      .join(", ");
-    ctx.ui.notify(`⚡ Boosted with: ${sectionNames || "playbook defaults"}`, "info");
-    ctx.ui.setStatus("boost", `⚡ Boost (${interactionSeq})`);
-
-    // Restructure prompt
-    const boostedText = `Following the project playbook in <boost-context>, implement the following task.
-Apply the WHAT/WHERE/CONNECTS/GUARDS/VERIFY structure from the playbook.
-Follow all mandatory checklist items and project conventions listed in <boost-context>.
-
-Task: ${rawPrompt}`;
-
-    return { action: "transform" as const, text: boostedText };
+      ctx.ui.setEditorText(originalPrompt);
+      boostedPromptInEditor = false;
+      pendingInjection = null;
+      currentInteraction = null;
+      originalPrompt = null;
+      ctx.ui.setStatus("boost", "⚡ Boost");
+      ctx.ui.notify("⚡ Reverted to original prompt.", "info");
+    },
   });
 
   // ── System Prompt Injection ────────────────────────────────
@@ -294,7 +466,7 @@ Task: ${rawPrompt}`;
     if (event.isError) currentInteraction.toolErrors++;
   });
 
-  pi.on("agent_end", async (_event: any, _ctx: ExtensionContext) => {
+  pi.on("agent_end", async (_event: any, ctx: ExtensionContext) => {
     const interaction = currentInteraction;
     currentInteraction = null;
 
@@ -310,6 +482,9 @@ Task: ${rawPrompt}`;
     } catch {
       // Non-critical — interaction data lost but extension continues
     }
+
+    // Update status bar with latest stats
+    ctx.ui.setStatus("boost", await buildStatusText());
   });
 
   // ── Commands ───────────────────────────────────────────────
@@ -318,7 +493,7 @@ Task: ${rawPrompt}`;
     description: "Show boost learning progress and playbook stats",
     handler: async (_args: string | undefined, ctx: ExtensionCommandContext) => {
       if (!isSetupComplete()) {
-        ctx.ui.notify("⚡ No playbook found. Run /boost first setup first.", "warning");
+        ctx.ui.notify("⚡ No playbook found. Run /boost-first-setup first.", "warning");
         return;
       }
 
@@ -404,7 +579,7 @@ Task: ${rawPrompt}`;
     description: "Incremental re-scan of project for new patterns",
     handler: async (_args: string | undefined, ctx: ExtensionCommandContext) => {
       if (!state?.setupComplete) {
-        ctx.ui.notify("⚡ No playbook found. Run /boost first setup first.", "warning");
+        ctx.ui.notify("⚡ No playbook found. Run /boost-first-setup first.", "warning");
         return;
       }
 
@@ -457,11 +632,73 @@ Task: ${rawPrompt}`;
         playbookSections = [];
         currentSessionId = null;
         invalidateCache();
-        ctx.ui.notify("⚡ Boost data cleared. Run /boost first setup to start over.", "info");
-        ctx.ui.setStatus("boost", "⚡ Boost (run /boost first setup)");
+        ctx.ui.notify("⚡ Boost data cleared. Run /boost-first-setup to start over.", "info");
+        ctx.ui.setStatus("boost", "⚡ Boost (run /boost-first-setup)");
       } catch (e) {
         ctx.ui.notify(`⚡ Reset failed: ${e}`, "error");
       }
+    },
+  });
+
+  pi.registerCommand("boost-config", {
+    description: "Configure boost settings",
+    handler: async (args: string | undefined, ctx: ExtensionCommandContext) => {
+      if (!args?.trim()) {
+        const autosend = state?.autosend ?? false;
+        ctx.ui.notify(
+          `⚡ Boost Config\n` +
+          `  autosend: ${autosend ? "on" : "off"}\n\n` +
+          `  Usage: /boost-config autosend on|off`,
+          "info",
+        );
+        return;
+      }
+
+      const parts = args.trim().split(/\s+/);
+      if (parts[0] === "autosend" && (parts[1] === "on" || parts[1] === "off")) {
+        if (!state) {
+          ctx.ui.notify("⚡ Run /boost-first-setup before configuring.", "warning");
+          return;
+        }
+        state.autosend = parts[1] === "on";
+        await saveState();
+        ctx.ui.notify(`⚡ autosend ${parts[1] === "on" ? "enabled" : "disabled"}.`, "success");
+      } else {
+        ctx.ui.notify("⚡ Unknown config. Usage: /boost-config autosend on|off", "warning");
+      }
+    },
+  });
+
+  pi.registerCommand("boost-history", {
+    description: "Show recent boosted prompts and their scores",
+    handler: async (_args: string | undefined, ctx: ExtensionCommandContext) => {
+      if (!isSetupComplete()) {
+        ctx.ui.notify("⚡ No playbook found. Run /boost-first-setup first.", "warning");
+        return;
+      }
+
+      const recent = await readRecentInteractions(boostDir, 10);
+      if (recent.length === 0) {
+        ctx.ui.notify("⚡ No boosted prompts yet.", "info");
+        return;
+      }
+
+      const lines = ["", "  ⚡ Boost History", `  ${"─".repeat(50)}`];
+      for (let i = 0; i < recent.length; i++) {
+        const r = recent[i];
+        const score = scoreInteraction(r);
+        const truncated = r.promptRaw.length > 50
+          ? r.promptRaw.slice(0, 47) + "..."
+          : r.promptRaw;
+        const intent = r.intent ?? "general";
+        const pct = Math.round(score.composite * 100);
+        lines.push(
+          `  ${i + 1}. "${truncated}"  [${intent}]  ${r.turns} turn${r.turns !== 1 ? "s" : ""}  ${pct}%`,
+        );
+      }
+      lines.push("");
+
+      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 
@@ -553,8 +790,8 @@ Task: ${rawPrompt}`;
         }
       }
       // Timeout — playbook never appeared
-      ctx.ui.notify("⚡ Playbook generation timed out. Try /boost first setup again.", "warning");
-      ctx.ui.setStatus("boost", "⚡ Boost (run /boost first setup)");
+      ctx.ui.notify("⚡ Playbook generation timed out. Try /boost-first-setup again.", "warning");
+      ctx.ui.setStatus("boost", "⚡ Boost (run /boost-first-setup)");
     };
 
     // Run check in background (don't block the command)
@@ -563,28 +800,29 @@ Task: ${rawPrompt}`;
 
   async function runPreview(rawPrompt: string, ctx: ExtensionContext): Promise<void> {
     if (!isSetupComplete()) {
-      ctx.ui.notify("⚡ No playbook found. Run /boost first setup first.", "warning");
+      ctx.ui.notify("⚡ No playbook found. Run /boost-first-setup first.", "warning");
       return;
     }
 
-    const relevant = selectRelevantSections(playbookSections, rawPrompt);
+    const intent = detectIntent(rawPrompt);
+    const weights = getIntentWeights(intent);
+    const { cleaned, blocks } = preserveCodeBlocks(rawPrompt);
+    const relevant = selectRelevantSections(playbookSections, cleaned, weights);
     const injection = buildInjectionBlock(relevant);
+    const boostedText = restoreCodeBlocks(getIntentPrefix(intent, cleaned), blocks);
 
     const lines = [
       "",
       "  ⚡ Boost Preview",
       `  ${"─".repeat(40)}`,
+      `  Intent:  ${intent}`,
       `  Sections injected (${relevant.length}):`,
       ...relevant.map((s) => `    • ${s.heading}`),
       "",
       `  ── Injection size: ${injection.length} chars ──`,
       "",
       `  ── Restructured prompt ──`,
-      `  Following the project playbook in <boost-context>,`,
-      `  implement the following task.`,
-      `  Apply the WHAT/WHERE/CONNECTS/GUARDS/VERIFY structure.`,
-      "",
-      `  Task: ${rawPrompt}`,
+      ...boostedText.split("\n").map((l) => `  ${l}`),
       "",
     ];
 

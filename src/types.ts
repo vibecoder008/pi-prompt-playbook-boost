@@ -1,4 +1,4 @@
-// pi-boost-prompt v2 — Shared types
+// pi-prompt-playbook-boost v2 — Shared types
 
 // --- Exec function type (wraps pi.exec) ---
 
@@ -114,6 +114,18 @@ export interface ExistingRule {
   content: string;
 }
 
+export interface LinterConfig {
+  tool: string;           // "ESLint" | "Biome" | "Prettier"
+  configPath: string;
+  content: string;        // raw config content (truncated to 3000 chars)
+}
+
+export interface CiWorkflow {
+  name: string;           // filename
+  path: string;
+  content: string;        // raw YAML content (truncated to 3000 chars)
+}
+
 export interface CodebaseAnalysis {
   stack: TechStack;
   testFramework: string | null;
@@ -122,6 +134,11 @@ export interface CodebaseAnalysis {
   existingRules: ExistingRule[];
   keyDirectories: string[];
   filePatterns: { extension: string; count: number }[];
+  linterConfig: LinterConfig | null;
+  importAliases: Record<string, string>;
+  ciWorkflows: CiWorkflow[];
+  envVars: string[];
+  projectDocs: ExistingRule[];
 }
 
 // --- Interaction Tracking Types ---
@@ -136,7 +153,7 @@ export interface InteractionRecord {
   totalToolCalls: number;
   toolErrors: number;
   retried: boolean;
-
+  intent?: string;
 }
 
 // --- Scoring Types ---
@@ -173,4 +190,5 @@ export interface BoostState {
   shareWithTeam: boolean;
   lastUpdated: string;
   setupComplete: boolean;
+  autosend?: boolean;
 }

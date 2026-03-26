@@ -1,5 +1,5 @@
 {
-  "name": "pi-boost-prompt",
+  "name": "pi-prompt-playbook-boost",
   "version": "2.0.0",
   "description": "PI extension that learns from project history to optimize prompts via /boost",
   "private": true,
@@ -8,8 +8,14 @@
       "./src/index.ts"
     ]
   },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.1"
   }
 }

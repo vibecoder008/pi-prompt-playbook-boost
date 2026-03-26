@@ -10,6 +10,10 @@ declare module "@mariozechner/pi-coding-agent" {
       description: string;
       handler: (args: string | undefined, ctx: ExtensionCommandContext) => Promise<void>;
     }): void;
+    registerShortcut(shortcut: string, options: {
+      description?: string;
+      handler: (ctx: ExtensionContext) => Promise<void> | void;
+    }): void;
     exec(
       command: string,
       args: string[],
@@ -35,5 +39,7 @@ declare module "@mariozechner/pi-coding-agent" {
     select(title: string, options: string[]): Promise<number | undefined>;
     input(title: string, placeholder?: string): Promise<string | undefined>;
     setStatus(key: string, text: string | undefined): void;
+    setEditorText(text: string): void;
+    getEditorText(): string;
   }
 }

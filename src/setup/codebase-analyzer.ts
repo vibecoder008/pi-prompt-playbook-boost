@@ -1,9 +1,11 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, extname, basename } from "node:path";
 import type {
+  CiWorkflow,
   CodebaseAnalysis,
   ExecFn,
   ExistingRule,
+  LinterConfig,
   TechStack,
 } from "../types";
 
@@ -19,16 +21,33 @@ export async function analyzeCodebase(
   projectDir: string,
   exec: ExecFn
 ): Promise<CodebaseAnalysis> {
-  const [stack, testFramework, buildCommands, lintCommands, existingRules, keyDirectories, filePatterns] =
-    await Promise.all([
-      detectStack(projectDir),
-      detectTestFramework(projectDir),
-      detectBuildCommands(projectDir),
-      detectLintCommands(projectDir),
-      readExistingRules(projectDir),
-      detectKeyDirectories(projectDir, exec),
-      detectFilePatterns(projectDir, exec),
-    ]);
+  const [
+    stack,
+    testFramework,
+    buildCommands,
+    lintCommands,
+    existingRules,
+    keyDirectories,
+    filePatterns,
+    linterConfig,
+    importAliases,
+    ciWorkflows,
+    envVars,
+    projectDocs,
+  ] = await Promise.all([
+    detectStack(projectDir),
+    detectTestFramework(projectDir),
+    detectBuildCommands(projectDir),
+    detectLintCommands(projectDir),
+    readExistingRules(projectDir),
+    detectKeyDirectories(projectDir, exec),
+    detectFilePatterns(projectDir, exec),
+    detectLinterConfig(projectDir),
+    detectImportAliases(projectDir),
+    detectCiWorkflows(projectDir),
+    detectEnvVars(projectDir),
+    detectProjectDocs(projectDir),
+  ]);
 
   return {
     stack,
@@ -38,6 +57,11 @@ export async function analyzeCodebase(
     existingRules,
     keyDirectories,
     filePatterns,
+    linterConfig,
+    importAliases,
+    ciWorkflows,
+    envVars,
+    projectDocs,
   };
 }
 
@@ -203,6 +227,170 @@ export async function readExistingRules(
   }
 
   return rules;
+}
+
+// ---------------------------------------------------------------------------
+// New data-source detectors
+// ---------------------------------------------------------------------------
+
+const MAX_CONTENT_LENGTH = 3000;
+
+/**
+ * Detect the project's linter / formatter configuration.
+ * Checks Biome, ESLint, and Prettier config files in priority order and
+ * returns the first match.
+ */
+export async function detectLinterConfig(
+  projectDir: string
+): Promise<LinterConfig | null> {
+  const candidates: { tool: string; file: string }[] = [
+    // Biome
+    { tool: "Biome", file: "biome.json" },
+    { tool: "Biome", file: "biome.jsonc" },
+    // ESLint
+    { tool: "ESLint", file: "eslint.config.js" },
+    { tool: "ESLint", file: "eslint.config.mjs" },
+    { tool: "ESLint", file: "eslint.config.ts" },
+    { tool: "ESLint", file: ".eslintrc.json" },
+    { tool: "ESLint", file: ".eslintrc.js" },
+    { tool: "ESLint", file: ".eslintrc.yml" },
+    { tool: "ESLint", file: ".eslintrc" },
+    // Prettier
+    { tool: "Prettier", file: ".prettierrc" },
+    { tool: "Prettier", file: ".prettierrc.json" },
+    { tool: "Prettier", file: ".prettierrc.js" },
+    { tool: "Prettier", file: "prettier.config.js" },
+    { tool: "Prettier", file: "prettier.config.mjs" },
+  ];
+
+  for (const { tool, file } of candidates) {
+    const fullPath = join(projectDir, file);
+    const content = await safeReadFile(fullPath);
+    if (content !== null) {
+      return {
+        tool,
+        configPath: file,
+        content: content.slice(0, MAX_CONTENT_LENGTH),
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extract TypeScript path aliases from `tsconfig.json` → `compilerOptions.paths`.
+ * Returns a flat `Record<string, string>` mapping each alias to its first target path.
+ */
+export async function detectImportAliases(
+  projectDir: string
+): Promise<Record<string, string>> {
+  const tsconfig = await readJson(join(projectDir, "tsconfig.json"));
+  if (!tsconfig) return {};
+
+  const paths = tsconfig.compilerOptions?.paths as
+    | Record<string, string[]>
+    | undefined;
+  if (!paths) return {};
+
+  const aliases: Record<string, string> = {};
+  for (const [alias, targets] of Object.entries(paths)) {
+    if (Array.isArray(targets) && targets.length > 0) {
+      aliases[alias] = targets[0];
+    }
+  }
+  return aliases;
+}
+
+/**
+ * Discover CI/CD workflow files.
+ * Reads `.github/workflows/*.yml` / `*.yaml` and `.gitlab-ci.yml`.
+ */
+export async function detectCiWorkflows(
+  projectDir: string
+): Promise<CiWorkflow[]> {
+  const workflows: CiWorkflow[] = [];
+
+  // GitHub Actions
+  const ghDir = join(projectDir, ".github", "workflows");
+  const ghFiles = await safeReaddir(ghDir);
+  for (const name of ghFiles) {
+    if (!name.endsWith(".yml") && !name.endsWith(".yaml")) continue;
+    const fullPath = join(ghDir, name);
+    const content = await safeReadFile(fullPath);
+    if (content !== null) {
+      workflows.push({
+        name,
+        path: `.github/workflows/${name}`,
+        content: content.slice(0, MAX_CONTENT_LENGTH),
+      });
+    }
+  }
+
+  // GitLab CI
+  const gitlabPath = join(projectDir, ".gitlab-ci.yml");
+  const gitlabContent = await safeReadFile(gitlabPath);
+  if (gitlabContent !== null) {
+    workflows.push({
+      name: ".gitlab-ci.yml",
+      path: ".gitlab-ci.yml",
+      content: gitlabContent.slice(0, MAX_CONTENT_LENGTH),
+    });
+  }
+
+  return workflows;
+}
+
+/**
+ * Parse variable names from `.env.example`.
+ *
+ * **Security boundary**: only reads `.env.example` — never `.env`,
+ * `.env.local`, or any other env file.  Returns variable names only,
+ * never values.
+ */
+export async function detectEnvVars(projectDir: string): Promise<string[]> {
+  const content = await safeReadFile(join(projectDir, ".env.example"));
+  if (content === null) return [];
+
+  const varNames: string[] = [];
+  for (const line of content.split("\n")) {
+    const match = line.match(/^([A-Z_][A-Z0-9_]*)=/);
+    if (match) {
+      varNames.push(match[1]);
+    }
+  }
+  return varNames;
+}
+
+/**
+ * Read project-level documentation files (CONTRIBUTING.md, ARCHITECTURE.md).
+ * Returns them as `ExistingRule[]` so they slot into the existing data model.
+ */
+export async function detectProjectDocs(
+  projectDir: string
+): Promise<ExistingRule[]> {
+  const docs: ExistingRule[] = [];
+
+  const candidates: { source: string; rel: string }[] = [
+    { source: "CONTRIBUTING.md", rel: "CONTRIBUTING.md" },
+    { source: "ARCHITECTURE.md", rel: "ARCHITECTURE.md" },
+    { source: "architecture.md", rel: "architecture.md" },
+    { source: "docs/architecture.md", rel: "docs/architecture.md" },
+  ];
+
+  for (const { source, rel } of candidates) {
+    const fullPath = join(projectDir, rel);
+    const content = await safeReadFile(fullPath);
+    if (content !== null) {
+      docs.push({
+        source,
+        path: fullPath,
+        content: content.slice(0, MAX_CONTENT_LENGTH),
+      });
+    }
+  }
+
+  return docs;
 }
 
 // ---------------------------------------------------------------------------

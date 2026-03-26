@@ -1,316 +1,237 @@
-# pi-boost-prompt v2
+# ⚡ pi-prompt-playbook-boost
 
-A pi extension that learns from your project's git history, past sessions, and codebase to make every prompt project-aware. It generates a **playbook** — a living Markdown document of conventions, failure patterns, and prompt structure — then injects relevant sections into your prompts at zero extra LLM cost.
+**Make your AI coding agent actually understand your project.**
 
-## How It Works
+pi-prompt-playbook-boost scans your codebase, git history, and past sessions to build a *playbook* — a living document of your project's conventions, failure patterns, and structure. Every time you use `/boost`, that knowledge is injected into your prompt automatically. No extra API calls. No extra cost.
 
-1. **Setup once:** `/boost first setup` scans your project and generates a playbook via LLM.
-2. **Use daily:** `/boost <message>` injects relevant playbook sections into the system prompt and restructures your message. No extra LLM call — the normal agent call just has better context.
-3. **Learns over time:** On session shutdown, the extension scores interactions and scans git for fix-after-feature patterns. High-impact findings queue as suggestions you review via `/boost-review`.
+```
+You type:     /boost add a payment form with Stripe
 
-## Installation
-
-### Option 1: Symlink (recommended)
-
-```bash
-ln -s /path/to/pi-boost-prompt ~/.pi/agent/extensions/pi-boost-prompt
+What the AI sees:
+  ✦ Your tech stack (React, Prisma, Tailwind...)
+  ✦ Your project conventions (import aliases, error handling patterns...)
+  ✦ Your linter and formatter rules
+  ✦ Your CI pipeline and verification commands
+  ✦ Files that always change together
+  ✦ Mistakes the AI keeps making in your project
+  ✦ A structured prompt format that works for your codebase
 ```
 
-### Option 2: Copy
+---
+
+## Install
 
 ```bash
-cp -r /path/to/pi-boost-prompt ~/.pi/agent/extensions/pi-boost-prompt
+# Clone the repo
+git clone https://github.com/user/pi-prompt-playbook-boost.git
+
+# Symlink into pi's extensions directory
+ln -s /path/to/pi-prompt-playbook-boost ~/.pi/agent/extensions/pi-prompt-playbook-boost
 ```
 
-### Option 3: Test flag
+That's it. No dependencies to install. Restart pi and the extension is active.
 
-```bash
-pi -e /path/to/pi-boost-prompt/src/index.ts
+> **Quick test without installing:** `pi -e /path/to/pi-prompt-playbook-boost/src/index.ts`
+
+---
+
+## Quick Start
+
+### 1. Generate your playbook
+
+```
+/boost-first-setup
 ```
 
-The extension has **zero runtime dependencies** — only `node:fs`, `node:path`, and the pi extension API.
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/boost first setup` | Scan project, generate playbook |
-| `/boost <message>` | Inject playbook context and send prompt |
-| `/boost-preview <msg>` | Show what would be injected (without sending) |
-| `/boost-stats` | Show learning progress and scores |
-| `/boost-review` | Accept or reject pending playbook updates |
-| `/boost-refresh` | Incremental re-scan for new patterns |
-| `/boost-reset` | Delete playbook and all boost data |
-
-## Setup
-
-Run `/boost first setup` in any git-tracked project. The extension:
-
-1. **Asks a privacy question** — share playbook with team (commit to git) or keep private (adds `.pi/boost/` to `.gitignore`).
-2. **Scans the codebase** — reads `package.json`, `tsconfig.json`, config files. Detects language, framework, ORM, styling, state management, test framework, package manager, build/lint commands, and existing AI rules (CLAUDE.md, .cursorrules, .cursor/rules/, .windsurf/rules/, AGENTS.md, .github/copilot-instructions.md).
-3. **Scans git history** — parses the last 200 commits. Finds fix-after-feature chains (same author, <24h, shared files, "fix/patch/oops/typo" in message). Builds co-change coupling rules (>30% coupling rate, >5 co-occurrences). Identifies hotspot files.
-4. **Scans pi sessions** — reads `.pi/sessions/*.jsonl`. Counts user messages, detects retries (>60% word overlap between consecutive prompts), extracts common prompt patterns.
-5. **Generates the playbook** — assembles all analysis data into a structured prompt and sends it to the current LLM via `pi.sendUserMessage()`. The LLM writes `playbook.md` to disk.
-
-Setup output looks like:
+The extension scans your project and asks the AI to write a playbook tailored to your codebase. Takes about 30 seconds.
 
 ```
 ⚡ Analysis complete:
 • Tech stack: TypeScript, Next.js, Prisma, Tailwind CSS
-• Test framework: Vitest
+• Linter: ESLint
 • 200 commits analyzed → 23 fix-after-feature chains found
 • 8 pi sessions → 45 prompts analyzed
-• 12 co-change coupling rules detected
+• 2 CI workflow(s) detected
+• 14 environment variables from .env.example
+• Project docs found: CONTRIBUTING.md, ARCHITECTURE.md
 • Existing rules imported from: CLAUDE.md
-• 7 project conventions extracted
+
+⚡ Playbook ready! Use /boost <message> to start.
 ```
 
-For projects with no git history, the playbook generates from codebase analysis alone. Failure patterns, co-change rules, and success patterns fill in as you work.
-
-## The Playbook
-
-The playbook lives at `.pi/boost/playbook.md`. It is a standard Markdown file you can read, edit, and version control. The extension generates it, reads from it, and updates its Stats section — but you own it.
-
-### Structure
-
-```markdown
-# Project Playbook
-> Auto-generated by pi-boost-prompt. Last updated: 2026-03-25
-> Based on: 342 commits, 8 sessions, 89 source files
-
-## Project Identity
-- **Stack**: TypeScript, React 19, Next.js 15, Prisma, Tailwind v4
-- **Test runner**: Vitest
-- **Package manager**: bun
-- **Monorepo**: No
-- **Key directories**: src/components/, src/server/trpc/, src/lib/
-
-## Prompt Structure
-
-### 1. WHAT — Clear Deliverable
-### 2. WHERE — File Locations
-### 3. CONNECTS — Integration Points
-### 4. GUARDS — Constraints & Edge Cases
-### 5. VERIFY — Definition of Done
-
-## Mandatory Checklist
-- [ ] Use glass constants from `@/lib/utils`
-- [ ] Test in BOTH light and dark mode
-- [ ] Add i18n keys to ALL 19 locales
-
-## Conventions
-- Imports: absolute paths via `@/` alias
-- Error handling: use AppError class from `@/lib/errors`
-
-## Co-Change Rules
-- When modifying `prisma/schema.prisma` → also run `bun prisma generate`
-- When modifying `src/server/trpc/routers/*.ts` → update `src/lib/api.ts`
-
-## Known Failure Patterns
-- UI components without glass constants → caused 52 fix commits
-- Missing i18n keys → caused 22 fix commits
-
-## AI-Specific Anti-Patterns
-- Adds verbose JSDoc to obvious functions → remove
-- Uses `console.error` in catch blocks → use structured logger
-
-## Success Patterns
-- Backend-only changes (tRPC + Prisma) → 100% clean rate
-- One-axis changes (same change across many files) → 95% clean rate
-
-## Stats
-- Total boosted prompts: 45
-- First-attempt success rate: 73.0%
-- Average composite score: 0.78
-- Last updated: 2026-03-25T14:30:00Z
-```
-
-Every section is real data from your project, not generic advice. The Mandatory Checklist comes from actual fix-after-feature chains in your git history. The Co-Change Rules come from files that change together >30% of the time.
-
-## How `/boost <message>` Works
-
-When you type `/boost add a payment form`, two things happen with **zero extra LLM calls**:
-
-### 1. System prompt injection (`before_agent_start`)
-
-The extension parses the playbook into sections by `## ` headings. It scores each section against your prompt using keyword overlap (normalized by section size to avoid bias toward large sections).
-
-**Always injected:** Project Identity, Prompt Structure, Mandatory Checklist, Stats.
-
-**Conditionally injected:** The top 3 sections by relevance score (e.g., Conventions, Co-Change Rules, Known Failure Patterns — whichever match your prompt keywords).
-
-This keeps injection to ~2-4KB instead of the full playbook. The selected sections are wrapped in a `<boost-context>` XML block appended to the system prompt.
-
-### 2. Prompt restructuring (`input` transform)
-
-Your raw prompt is wrapped with an instruction prefix:
+### 2. Use it
 
 ```
-Following the project playbook in <boost-context>, implement the following task.
-Apply the WHAT/WHERE/CONNECTS/GUARDS/VERIFY structure from the playbook.
-Follow all mandatory checklist items and project conventions listed in <boost-context>.
-
-Task: add a payment form
+/boost add a settings page with user preferences
 ```
 
-The model reads the playbook in the system prompt and the structured instruction in the user message. It applies the project knowledge as it works — through the normal agent call, just with better context.
-
-### Preview
-
-Use `/boost-preview <message>` to see what would be injected without sending:
+The extension rewrites your prompt and puts it in the editor for you to review:
 
 ```
-⚡ Boost Preview
-────────────────────────────────────────
-Sections injected (6):
-  • Project Identity
-  • Prompt Structure
-  • Mandatory Checklist
-  • Stats
-  • Conventions
-  • Known Failure Patterns
-
-── Injection size: 2847 chars ──
-
-── Restructured prompt ──
-Following the project playbook in <boost-context>,
-implement the following task.
-Apply the WHAT/WHERE/CONNECTS/GUARDS/VERIFY structure.
-
-Task: add a payment form
+⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
+   Review the prompt, then press Enter to send. Ctrl+Shift+X to revert.
 ```
 
-## Learning Loop
+- **Press Enter** to send the boosted prompt
+- **Edit the prompt** first if you want to tweak it
+- **Press `Ctrl+Shift+X`** to revert to your original prompt
 
-The extension learns from three sources, all without extra LLM calls at runtime.
+### 3. That's it
 
-### Interaction scoring (session shutdown)
+The extension learns in the background. It tracks what works, detects fix-after-feature patterns in your commits, and suggests playbook updates over time.
 
-Every boosted prompt is tracked during the session. On shutdown, each interaction is scored using three signals:
+---
 
-| Signal | Weight | Scoring |
-|--------|--------|---------|
-| Turn efficiency | 0.35 | `exp(-0.3 * max(0, turns - 1))` — 1 turn = 1.0, 3 turns = 0.55, 5 turns = 0.30 |
-| Error free | 0.35 | 1.0 if zero tool errors, else `1 - (errors / totalToolCalls)` |
-| No retry | 0.30 | 1.0 if no retry, 0.2 if retried |
+## How It Works
 
-The composite score is the weighted average. Scores >= 0.70 count as first-attempt successes. The Stats section of the playbook is updated with current metrics.
+```
+┌─────────────────────┐
+│  /boost <message>   │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────────────────────────┐
+│  1. Load playbook (.pi/boost/playbook.md)│
+│  2. Pick relevant sections for prompt    │
+│  3. Inject into system prompt            │
+│  4. Restructure user message             │
+│  5. Send to AI (normal call, no extra)   │
+└─────────────────────────────────────────┘
+```
 
-### Git fix-chain detection (session start + shutdown)
+**No extra LLM calls.** The playbook is injected as context into the system prompt the AI already reads. Your normal agent call just has better context — at zero additional cost.
 
-On `session_start`, the extension checks if HEAD has moved since the last session. If new commits exist, it scans them for fix-after-feature chains: pairs of commits by the same author, within 24 hours, sharing files, where the later commit message matches a fix pattern (`fix`, `patch`, `oops`, `typo`, `forgot`, `broken`, `revert`, `hotfix`, `fixup`).
+### What the playbook contains
 
-On `session_shutdown`, it repeats this scan for commits made during the session.
+The playbook is a Markdown file at `.pi/boost/playbook.md`. You can read it, edit it, and commit it to git.
 
-Detected patterns are queued as suggestions in `pending-updates.json` with a confidence score (0.5 base + 0.15 per repeated occurrence, capped at 0.95).
+| Section | What's in it | Where it comes from |
+|---------|-------------|-------------------|
+| **Project Identity** | Stack, framework, test runner, key dirs | `package.json`, config files |
+| **Prompt Structure** | WHAT / WHERE / CONNECTS / GUARDS / VERIFY | Best practice template |
+| **Mandatory Checklist** | Things the AI must not forget | Fix-after-feature commits |
+| **Conventions** | Import aliases, linter rules, error handling | Codebase, linter config, `tsconfig.json` paths |
+| **Co-Change Rules** | "When you touch X, also update Y" | Git file coupling analysis |
+| **Failure Patterns** | Common mistakes in this project | Git fix chains |
+| **Anti-Patterns** | Things the AI specifically gets wrong | Session retry analysis |
+| **Success Patterns** | What works on the first attempt | Clean commit analysis |
 
-### Review cycle (`/boost-review`)
+### What gets scanned during setup
 
-Pending suggestions are not auto-applied. Run `/boost-review` to see each one:
+| Source | What's extracted |
+|--------|-----------------|
+| **Codebase** | `package.json`, `tsconfig.json` (including path aliases), directory structure, file patterns |
+| **Linter / formatter config** | ESLint, Biome, or Prettier config — so the AI follows your style rules |
+| **CI workflows** | `.github/workflows/*.yml`, `.gitlab-ci.yml` — exact verification commands |
+| **Environment variables** | Variable names from `.env.example` (names only, never values) |
+| **Git history** | Last 200 commits, fix-after-feature chains, file coupling |
+| **Past pi sessions** | Prompt patterns, retries, tool errors |
+| **Existing AI rules** | CLAUDE.md, .cursorrules, AGENTS.md, Copilot instructions |
+| **Project documentation** | CONTRIBUTING.md, ARCHITECTURE.md |
+
+---
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/boost-first-setup` | Scan your project and generate a playbook |
+| `/boost <message>` | Rewrite prompt and put in editor for review — Enter to send |
+| `/boost-preview <msg>` | See what would be injected without sending |
+| `/boost-stats` | View success rates and interaction metrics |
+| `/boost-review` | Accept or reject suggested playbook updates |
+| `/boost-refresh` | Re-scan your project for new patterns |
+| `/boost-reset` | Delete everything and start fresh |
+
+---
+
+## Learning
+
+The extension gets smarter as you work.
+
+**After every session**, it checks:
+- How many turns did each task take? (fewer = better)
+- Were there tool errors?
+- Did you have to retry or rephrase?
+
+**On every session start**, it checks:
+- Were there new commits since last time?
+- Did any "fix" commits follow a feature commit on the same files?
+- If so, it queues a suggestion to update the playbook.
+
+**You stay in control.** Suggestions are never auto-applied. Run `/boost-review` to accept or reject them:
 
 ```
 ⚡ Playbook Update (1/3)
 NEW_RULE: known_failure_patterns
 
-When modifying src/server/trpc/routers/payments.ts, also check related files
+When modifying src/server/trpc/routers/payments.ts, also check related files.
 
-Evidence: Commit a1b2c3d fixed src/server/trpc/routers/payments.ts within 2.5h
-of feature commit e4f5g6h
+Evidence: Commit a1b2c3d fixed same files within 2.5h of feature commit
 Confidence: 65%
+
+[Accept] [Reject]
 ```
 
-Accept appends the rule to the target playbook section. Reject discards it. Either way, it is removed from the pending queue.
+---
 
-## Stats
-
-Run `/boost-stats` to see current metrics:
-
-```
-⚡ Boost Stats
-────────────────────────────────────────
-Total boosted prompts:    45
-Avg composite score:      78.2%
-First-attempt success:    73% (score >= 70%)
-Pending playbook updates: 3
-Playbook sections:        9
-```
-
-## Incremental Refresh
-
-Run `/boost-refresh` to re-scan the project without starting over:
-
-1. Re-runs git analysis (up to 500 commits), codebase analysis, and session analysis.
-2. Sends updated analysis to the LLM with instructions to regenerate the playbook while preserving manually added rules.
-3. Updates the stored scan hash so future incremental scans start from the new HEAD.
-
-## Data Storage
-
-Everything lives in the project under `.pi/boost/`:
-
-```
-.pi/boost/
-├── playbook.md              # The playbook (editable, committable)
-├── state.json               # Extension state (last scan hash, interaction count)
-├── pending-updates.json     # Queued playbook update suggestions
-└── history/
-    └── sessions.jsonl       # Interaction records (one JSON line per boost)
-```
-
-`state.json` tracks:
-- `lastScanHash` — git commit hash at last scan
-- `interactionCount` — total boosted prompts
-- `shareWithTeam` — privacy choice from setup
-- `setupComplete` — whether a playbook exists
-
-Each line in `sessions.jsonl` records: prompt text, sections used, turn count, tool call count, tool errors, and whether the user retried.
-
-## Supported Languages
-
-Codebase analysis detects stacks for:
+## Supported Stacks
 
 | Language | Frameworks | ORMs |
 |----------|-----------|------|
-| TypeScript/JavaScript | Next.js, Nuxt, Remix, Angular, SvelteKit, Vue, React, Express, Fastify, Hono, Astro, SolidJS | Prisma, Drizzle, TypeORM, Sequelize, Knex, Mongoose |
+| TypeScript / JavaScript | Next.js, Nuxt, Remix, Angular, SvelteKit, Vue, React, Express, Fastify, Hono, Astro, SolidJS | Prisma, Drizzle, TypeORM, Sequelize, Knex, Mongoose |
 | Python | Django, Flask, FastAPI | SQLAlchemy |
 | Rust | Actix, Axum, Rocket | — |
 | Go | Gin, Fiber, Echo | — |
 
-It also detects: Tailwind/CSS-in-JS/Sass/Vanilla Extract styling, Zustand/Redux/Jotai/Recoil/MobX/Pinia/TanStack Query state management, Vitest/Jest/Mocha/Ava/Playwright/Cypress/pytest/cargo test/go test frameworks, and bun/pnpm/yarn/npm package managers.
+Also detects: Tailwind · CSS-in-JS · Sass · Zustand · Redux · Jotai · MobX · Pinia · TanStack Query · Vitest · Jest · Playwright · Cypress · pytest · bun · pnpm · yarn · npm
 
-## Limitations
+Works with any project — the playbook starts from whatever the extension can find and grows as you use it.
 
-- **One LLM call during setup.** The playbook generation step sends a prompt to the current model. This is the only LLM call the extension makes. All `/boost` usage at runtime is zero-cost context injection.
-- **No cross-project learning.** Each project has its own playbook. Share knowledge between projects by committing the playbook to git.
-- **Keyword-based section matching.** Section selection uses word overlap, not semantic search. If your prompt uses different terminology than the playbook, some relevant sections may not be selected.
-- **Git-date granularity.** Fix chain detection uses `--date=short` (YYYY-MM-DD), so the 24-hour window is approximate.
-- **No AST parsing.** Convention detection uses file reading and config parsing, not tree-sitter or similar. It works well for stack/framework detection but does not extract code-level patterns like naming conventions — those come from the LLM's analysis of existing rule files.
+---
 
-## Troubleshooting
+## Privacy & Security
 
-### "No playbook found" after setup
+- **`.env.example` only** — the extension reads variable *names* from `.env.example` to know what env vars exist. It never reads `.env`, `.env.local`, or any file containing actual secrets.
+- **No git diffs** — git analysis uses only commit metadata (messages, file names, timestamps). It never reads diff content, which could contain removed secrets.
+- **Your choice to share** — during setup you choose whether to commit the playbook to git or keep it private.
 
-The playbook is written by the LLM during setup. If the model fails to write the file, setup times out after 5 minutes. Run `/boost first setup` again. Check that `.pi/boost/` exists and is writable.
+---
 
-### Playbook has generic content
+## File Structure
 
-The playbook quality depends on what the extension finds. Projects with more git history and existing rule files (CLAUDE.md, .cursorrules) produce richer playbooks. Edit the playbook manually to add project-specific knowledge the scans missed.
-
-### Sections not matching my prompts
-
-The keyword matcher scores sections by word overlap with your prompt. Use terms that appear in your playbook sections. Run `/boost-preview <msg>` to see which sections would be injected and adjust your wording.
-
-### Stats show 0 even after using /boost
-
-Stats update on `session_shutdown`. If pi is killed or crashes, the shutdown handler may not run and interaction data is lost for that session.
-
-### Pending updates keep appearing
-
-Fix-chain detection runs on every `session_start` when new commits exist. If your workflow produces many small fix commits, you will see more suggestions. Use `/boost-review` regularly, or edit the playbook directly and the patterns will stop generating duplicate suggestions (deduplication by section + content).
-
-### Reset everything
+Everything lives inside your project at `.pi/boost/`:
 
 ```
-/boost-reset
+.pi/boost/
+├── playbook.md           ← The playbook (edit this, commit it, share it)
+├── state.json            ← Internal state (last scan hash, counters)
+├── pending-updates.json  ← Queued suggestions awaiting review
+└── history/
+    └── sessions.jsonl    ← Interaction log (not committed)
 ```
 
-Deletes `.pi/boost/` entirely. Run `/boost first setup` to start fresh.
+---
+
+## FAQ
+
+**Does this cost extra?**
+No. Setup makes one LLM call to generate the playbook. After that, `/boost` adds context to your existing prompt — no additional API calls.
+
+**What if my project has no git history?**
+It still works. The playbook generates from your codebase alone. Failure patterns and co-change rules fill in as you accumulate commits.
+
+**Can I edit the playbook?**
+Yes. It's a Markdown file you own. Add rules, remove sections, tweak conventions — your edits are preserved across refreshes.
+
+**Can my team use the same playbook?**
+Yes. Commit `playbook.md` to git and everyone benefits from the same project knowledge.
+
+**How do I start over?**
+Run `/boost-reset` to delete everything, then `/boost-first-setup` to regenerate.
+
+---
+
+## License
+
+MIT

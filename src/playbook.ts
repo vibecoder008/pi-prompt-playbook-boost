@@ -109,6 +109,7 @@ export function parsePlaybook(content: string): PlaybookSection[] {
 export function selectRelevantSections(
   sections: PlaybookSection[],
   userPrompt: string,
+  weights?: Record<string, number>,
 ): PlaybookSection[] {
   const promptKeywords = new Set(extractKeywords(userPrompt));
   const selected: PlaybookSection[] = [];
@@ -129,9 +130,11 @@ export function selectRelevantSections(
       if (promptKeywords.has(kw)) overlap++;
     }
 
-    // Normalize by section keyword count to avoid bias toward large sections
+    // Normalize by section keyword count to avoid bias toward large sections.
+    // Apply intent weight if provided (default 1.0).
+    const weight = weights?.[section.heading] ?? 1.0;
     const score = section.keywords.length > 0
-      ? overlap / Math.sqrt(section.keywords.length)
+      ? (overlap / Math.sqrt(section.keywords.length)) * weight
       : 0;
 
     candidates.push({ section, score });

@@ -111,13 +111,13 @@ export function generateSuggestions(
     if (!score || score.composite >= 0.5) continue;
 
     const interaction = interactions[i];
-    const category = interaction.category ?? "unknown";
+    const taskSummary = interaction.promptRaw.slice(0, 60).replace(/\n/g, " ").trim() || "unknown task";
 
     updates.push({
       id: `low_${interaction.id}_${Date.now()}`,
       type: "update_stat",
       section: "known_failure_patterns",
-      content: `Task type "${category}" has low success rate — consider adding more specific conventions`,
+      content: `Task "${taskSummary}" had low success — consider adding more specific conventions`,
       evidence: `Interaction ${interaction.id} scored ${score.composite.toFixed(2)} (turns: ${interaction.turns}, errors: ${interaction.toolErrors})`,
       confidence: 0.4,
       created: now,
