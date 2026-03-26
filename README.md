@@ -6,7 +6,7 @@
 
 When you ask an AI to write code, it doesn't know anything about *your* project — your file structure, your coding style, or the mistakes that keep happening. You end up repeating yourself every time.
 
-This extension fixes that. It scans your project once, builds a cheat sheet (called a **playbook**), and when you use `/boost`, an LLM rewrites your prompt to be clearer and better structured using that playbook knowledge. You see the rewritten prompt and the selected context right in the editor before anything is sent, so you're always in control.
+This extension fixes that. It scans your project once, builds a cheat sheet (called a **playbook**), and when you use `/boost`, an LLM rewrites your prompt to be clearer and better structured using that playbook knowledge. You see the clean rewritten prompt right in the editor before anything is sent, so you're always in control.
 
 ### Before boost
 
@@ -21,12 +21,10 @@ AI sees:   just your message — knows nothing about your project
 You type:  /boost add a payment form with Stripe
 
 Your editor shows:
-  ✦ A rewritten prompt — clearer, better structured, informed by your playbook
-  ✦ A visible <boost-context> block with the relevant playbook sections:
-      your tech stack, coding rules, linter settings, co-change rules,
-      known failure patterns, and anything else that applies
+  ✦ A rewritten prompt — clearer, better structured, with your project's
+    conventions, coding rules, and failure patterns baked right in
 
-You review everything, tweak if you want, then hit Enter.
+You review it, tweak if you want, then hit Enter.
 ```
 
 ---
@@ -83,7 +81,7 @@ Just add `/boost` before any message:
 /boost add a settings page with user preferences
 ```
 
-The extension makes a quick LLM call to rewrite your prompt using playbook knowledge. Then it puts the result in your editor so you can review it before sending:
+The extension makes a quick LLM call to rewrite your prompt using playbook knowledge. The playbook sections are used internally by the rewriter — only the clean rewritten prompt appears in your editor:
 
 ```
 ⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
@@ -96,26 +94,15 @@ Here's what your editor might look like after boosting:
 Create a user preferences settings page at src/app/settings/page.tsx.
 Use the existing AppLayout wrapper and follow the form pattern in
 src/components/forms/. Validate inputs with zod. Use the AppError class
-for error handling. Run `npm test` before considering it done.
-
-<boost-context>
-## Conventions
-- Use `@/` import aliases
-- All errors go through the `AppError` class
-- Forms use zod for validation
-
-## Co-Change Rules
-- When adding a new page, also update src/app/routes.ts
-
-## Known Failure Patterns
-- Settings pages often forget to handle the "loading" state
-</boost-context>
+for error handling. When adding a new page, also update
+src/app/routes.ts. Make sure to handle the "loading" state.
+Run `npm test` before considering it done.
 ```
 
-The rewritten prompt at the top is what the LLM produced from your original message plus the playbook. The `<boost-context>` block shows exactly which playbook sections were included. Both are visible and editable.
+The rewriter LLM takes your original message, reads the relevant playbook sections, and produces a single improved prompt with that knowledge baked in. No raw playbook sections or XML blocks are shown — just a clean, informed prompt.
 
 - **Press Enter** — send the boosted prompt
-- **Edit it first** — tweak the rewritten prompt or the context before sending
+- **Edit it first** — tweak the rewritten prompt before sending
 - **Press `Ctrl+Shift+X`** — go back to your original prompt
 
 ### Step 3: That's it
@@ -152,14 +139,14 @@ The extension learns in the background as you work. It watches for new patterns 
 ┌───────────────────────────────────────────────────────┐
 │  1. Load your playbook                                │
 │  2. LLM rewrites your prompt using playbook knowledge │
-│  3. Rewritten prompt + <boost-context> shown in editor│
+│  3. Rewritten prompt shown in editor                  │
 │  4. You review, edit if needed, then send             │
 └───────────────────────────────────────────────────────┘
 ```
 
 ### What's in the playbook?
 
-The playbook is a file at `.pi/boost/playbook.md`. You can open it, edit it, and share it with your team. Here's what each section means:
+The playbook is a file at `.pi/boost/playbook.md`. You can open it, edit it, and share it with your team. The rewriter LLM reads relevant sections internally when rewriting your prompt — the playbook content is baked into the improved prompt, not shown separately. Here's what each section means:
 
 | Section | What it means (in plain English) |
 |---------|--------------------------------|
@@ -280,7 +267,7 @@ Everything the extension creates lives in `.pi/boost/` inside your project:
 ## FAQ
 
 **Does this cost extra money?**
-A little. Setup makes one LLM call to create the playbook. Each `/boost` makes one additional LLM call to rewrite your prompt. These rewrite calls are short and cheap — typically just a few hundred tokens — but they're not free. For most usage, the cost is negligible.
+A little. Setup makes one LLM call to create the playbook. Each `/boost` makes one additional LLM call to rewrite your prompt. That rewrite call is the only extra cost — the playbook knowledge is baked into the rewritten prompt, so there's no additional context overhead sent to the coding agent. These rewrite calls are short and cheap — typically just a few hundred tokens — and for most usage, the cost is negligible.
 
 **My project has no git history. Does it still work?**
 Yes. It builds the playbook from your code and config files alone. Git patterns fill in as you make commits.

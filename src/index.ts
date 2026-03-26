@@ -460,28 +460,28 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
         rewrittenPrompt = promptForRewrite;
       }
 
-      // Build the final editor text: rewritten prompt + visible boost-context
-      const editorText = `${rewrittenPrompt}\n\n${boostContext}`;
+      // Only send the rewritten prompt — the LLM rewriter already baked
+      // playbook knowledge into it.  No raw <boost-context> dump needed.
 
       // Auto-send: send immediately
       if (state?.autosend) {
         originalPrompt = null;
         boostedPromptInEditor = false;
-        pendingInjection = null; // Context is in the message itself now
+        pendingInjection = null;
         ctx.ui.setStatus("boost", `⚡ Boost (${interactionSeq})`);
         ctx.ui.notify(`⚡ Boosted [${intent}]: ${sectionNames || "playbook defaults"}`, "info");
-        return { action: "transform" as const, text: editorText };
+        return { action: "transform" as const, text: rewrittenPrompt };
       }
 
-      // Two-step editor flow (default): put rewritten prompt + context in editor for review
+      // Two-step editor flow (default): put rewritten prompt in editor for review
       originalPrompt = rawPrompt;
       boostedPromptInEditor = true;
-      pendingInjection = null; // Context is visible in editor, not hidden in system prompt
-      ctx.ui.setEditorText(editorText);
+      pendingInjection = null;
+      ctx.ui.setEditorText(rewrittenPrompt);
 
       ctx.ui.notify(
         `⚡ Boosted [${intent}]: ${sectionNames || "playbook defaults"}\n` +
-        `   Review the improved prompt + playbook context, then press Enter to send.\n` +
+        `   Review the improved prompt, then press Enter to send.\n` +
         `   Ctrl+Shift+X to revert to original.`,
         "info",
       );

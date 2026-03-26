@@ -6,7 +6,7 @@
 
 ## What This Extension Does (One Paragraph)
 
-When you install pi-prompt-playbook-boost in a project and run `/boost-first-setup`, it scans your git history, past pi sessions, and codebase to build a **project-specific playbook** — a living document that captures what makes prompts succeed or fail in THIS project. When you later type `/boost <message>`, the extension makes one LLM call to rewrite your prompt using relevant playbook context, then places both the improved prompt and a visible `<boost-context>` block in the editor for review. After each interaction, the extension tracks what happened (turns, tool errors, retries) and uses that data to update the playbook. Over time, it learns the optimal way to communicate with the AI for your specific project.
+When you install pi-prompt-playbook-boost in a project and run `/boost-first-setup`, it scans your git history, past pi sessions, and codebase to build a **project-specific playbook** — a living document that captures what makes prompts succeed or fail in THIS project. When you later type `/boost <message>`, the extension makes one LLM call to rewrite your prompt using relevant playbook sections, then places the clean rewritten prompt in the editor for review. The playbook knowledge is baked into the rewritten prompt — no raw playbook sections or XML blocks are shown to the user or sent to the coding agent. After each interaction, the extension tracks what happened (turns, tool errors, retries) and uses that data to update the playbook. Over time, it learns the optimal way to communicate with the AI for your specific project.
 
 ---
 
@@ -61,8 +61,7 @@ Boost: [Cancellable loader shown while LLM rewrites the prompt]
           Review the prompt, then press Enter to send. Ctrl+Shift+X to revert.
 
        [Editor now contains:]
-       - The LLM-rewritten prompt (restructured with playbook knowledge)
-       - A visible <boost-context> block with selected playbook sections
+       - The LLM-rewritten prompt (playbook knowledge baked in, clean text)
 
 User:  [reviews/edits the prompt, then presses Enter to send,
         or Ctrl+Shift+X to revert to original]
@@ -251,13 +250,13 @@ Otherwise it:
 1. Selects relevant playbook sections (keyword match — see Step 3)
 2. Calls the LLM via `complete()` from `@mariozechner/pi-ai` to rewrite the user's prompt using the selected playbook sections as context (handled by `src/rewriter.ts`)
 3. While the LLM rewrites, a cancellable `BorderedLoader` is shown via `ctx.ui.custom()`. If the user cancels, the boost is aborted and the original prompt is restored
-4. If the LLM rewrite fails (network error, timeout, etc.), falls back to the original prompt with playbook context appended
-5. Builds the editor text: the rewritten prompt followed by a visible `<boost-context>` block containing the selected playbook sections
+4. If the LLM rewrite fails (network error, timeout, etc.), falls back to the original prompt (no modification)
+5. Places only the rewritten prompt in the editor — no raw playbook sections or XML blocks are included
 6. Stores the original prompt for revert
-7. Calls `ctx.ui.setEditorText(boostedText)` to place everything in the editor
+7. Calls `ctx.ui.setEditorText(rewrittenPrompt)` to place the clean prompt in the editor
 8. Returns `{ action: "handled" }` — nothing is sent yet
 
-The user sees the rewritten prompt and context in the editor, plus a notification:
+The user sees the rewritten prompt in the editor, plus a notification:
 
 ```
 ⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
@@ -266,10 +265,10 @@ The user sees the rewritten prompt and context in the editor, plus a notificatio
 
 ### Step 2: User reviews and sends
 
-The user can review both the LLM-rewritten prompt and the `<boost-context>` block before sending.
+The user reviews the rewritten prompt in the editor.
 
-- **Press Enter** → the `input` event fires again, the extension detects `boostedPromptInEditor` flag, clears it, and returns `{ action: "continue" }`. The full editor text (rewritten prompt + boost-context) goes through as the user message.
-- **Edit the prompt** before pressing Enter — the user's edits are preserved, including modifications to the boost-context block.
+- **Press Enter** → the `input` event fires again, the extension detects `boostedPromptInEditor` flag, clears it, and returns `{ action: "continue" }`. The rewritten prompt goes through as the user message.
+- **Edit the prompt** before pressing Enter — the user's edits are preserved.
 - **Press `Ctrl+Shift+X`** → registered shortcut reverts the editor to the original prompt and cancels tracking.
 
 ### Step 3: Smart-Load Relevant Sections
@@ -280,13 +279,13 @@ The playbook is parsed into sections by `## ` headings. Each section's keywords 
 
 **Conditionally included:** Top 3 sections by keyword overlap score (normalized by `√section_keyword_count` to avoid bias toward large sections). If no keywords match, the top 3 sections are included anyway.
 
-This keeps the boost-context to ~2–4KB.
+This keeps the context fed to the rewriter to ~2–4KB, used internally only.
 
-### Step 4: Visible context in editor text
+### Step 4: Clean prompt output
 
-Selected sections are wrapped in a `<boost-context source="project-playbook">` XML block and placed in the editor text after the rewritten prompt. The user can see and edit both before sending.
+The selected playbook sections are provided to the rewriter LLM as context for rewriting the prompt. Only the clean rewritten prompt is placed in the editor — no raw playbook sections, no XML blocks. The playbook knowledge is baked into the improved prompt by the rewriter.
 
-**One LLM call per boost** (via `complete()`) to rewrite the prompt. The playbook context is visible in the editor, not hidden in the system prompt.
+**One LLM call per boost** (via `complete()`) to rewrite the prompt. The user sees only the resulting rewritten prompt in the editor.
 
 ### Step 5: Track
 
@@ -307,7 +306,7 @@ While the LLM rewrites the prompt, a `BorderedLoader` component is displayed via
 
 ### Fallback Behavior
 
-If the LLM rewrite call fails for any reason (network error, timeout, model unavailable), the extension falls back gracefully: it uses the original prompt text with the `<boost-context>` block appended. The user still gets playbook context — just without the prompt rewriting.
+If the LLM rewrite call fails for any reason (network error, timeout, model unavailable), the extension falls back gracefully: it uses the original prompt text unchanged. The user is notified that the boost failed and can retry or send the original prompt as-is.
 
 ---
 
@@ -473,7 +472,7 @@ Dev dependencies: `typescript`, `vitest`, `@types/node`.
 |-----|---------|
 | `pi.on("input")` | Intercept `/boost` commands, LLM-rewrite prompt, place boosted prompt + context in editor, pass through on second Enter |
 | `pi.registerShortcut()` | `Ctrl+Shift+X` to revert boosted prompt |
-| `ctx.ui.setEditorText()` | Place rewritten prompt + boost-context in editor without sending |
+| `ctx.ui.setEditorText()` | Place rewritten prompt in editor without sending |
 | `ctx.ui.custom()` | Show cancellable `BorderedLoader` during LLM prompt rewrite |
 | `ctx.model` / `ctx.modelRegistry` | Access current model for LLM prompt rewriting via `complete()` |
 | `pi.on("session_start")` | Load state, scan for new commits |
@@ -538,7 +537,7 @@ Dev dependencies: `typescript`, `vitest`, `@types/node`.
 
 1. **Playbook size → Smart loading.** Full playbook on disk, but only inject relevant sections based on keyword matching. Always-inject set (4 sections) + top 3 by relevance. Keeps context to ~2–4KB.
 
-2. **LLM approach → One call per boost for prompt rewriting.** The extension makes one `complete()` call per `/boost` to rewrite the user's prompt using playbook context. The rewritten prompt and a visible `<boost-context>` block are placed in the editor for review. This replaces the previous system prompt injection approach — the user now sees exactly what the model will receive.
+2. **LLM approach → One call per boost for prompt rewriting.** The extension makes one `complete()` call per `/boost` to rewrite the user's prompt using playbook context. Only the clean rewritten prompt is placed in the editor for review — playbook knowledge is baked into the prompt by the rewriter, not shown as a separate block. The user sees exactly what the coding agent will receive.
 
 3. **Privacy → Ask during setup.** Configures `.gitignore` based on answer.
 
