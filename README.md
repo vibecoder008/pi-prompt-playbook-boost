@@ -37,7 +37,7 @@ That's it. Restart pi and the extension is active.
 /boost-first-setup
 ```
 
-The extension scans your project and asks the AI to write a playbook tailored to your codebase. Takes about 30 seconds.
+The extension scans your project and sends the analysis to your AI provider to generate a playbook. Takes about 30 seconds. See [Privacy & Data Sent During Setup](#privacy--data-sent-during-setup) for exactly what gets sent.
 
 ```
 ⚡ Analysis complete:
@@ -184,11 +184,38 @@ Works with any project — the playbook starts from whatever the extension can f
 
 ---
 
-## Privacy & Security
+## Privacy & Data Sent During Setup
 
-- **`.env.example` only** — the extension reads variable *names* from `.env.example` to know what env vars exist. It never reads `.env`, `.env.local`, or any file containing actual secrets.
-- **No git diffs** — git analysis uses only commit metadata (messages, file names, timestamps). It never reads diff content, which could contain removed secrets.
-- **Your choice to share** — during setup you choose whether to commit the playbook to git or keep it private.
+When you run `/boost-first-setup`, the extension collects project analysis data and **sends it all to your configured AI provider in one prompt** to generate the playbook. Understand what gets sent:
+
+### What the AI receives
+
+| Data | Details |
+|------|---------|
+| **Git commit messages** | Last 200 commit subjects, authors, timestamps, file lists (no diffs, no code) |
+| **Project config files** | `package.json`, `tsconfig.json`, `biome.json` / ESLint config — full contents |
+| **CI/CD workflows** | `.github/workflows/*.yml` — full YAML contents |
+| **Existing AI rules** | `AGENTS.md`, `CLAUDE.md`, `.cursorrules` — full contents |
+| **Project documentation** | `CONTRIBUTING.md`, `ARCHITECTURE.md`, `docs/architecture.md` — full contents |
+| **Env variable names** | Names from `.env.example` only (e.g. `STRIPE_SECRET_KEY`) — **never actual values** |
+| **Directory structure** | Folder names, file counts by extension |
+
+### What this reveals
+
+Even though no secrets are sent, the AI provider sees your:
+- **Internal architecture** — system design, data flows, database models
+- **Service integrations** — env var names reveal you use Stripe, Twilio, AWS, etc.
+- **Team conventions** — coding rules, commit patterns, CI pipeline details
+- **File structure** — internal paths, component organization
+
+This is the same AI provider pi already sends your code to during normal usage. No additional third-party services are involved.
+
+### Security guarantees
+
+- **No secret values** — reads `.env.example` only, never `.env` or `.env.local`
+- **No code content** — git analysis uses commit metadata only, never diffs
+- **No extra providers** — data goes to your existing pi AI provider, nowhere else
+- **Your choice to share** — you decide whether to commit the playbook to git or keep it local
 
 ---
 
