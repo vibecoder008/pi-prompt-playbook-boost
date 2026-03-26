@@ -13,6 +13,7 @@
  *   /boost-config            — Configure boost settings
  *   /boost-review            — Review pending playbook updates
  *   /boost-refresh           — Incremental re-scan
+ *   /boost-full-scan         — Deep scan of ALL project commits
  *   /boost-reset             — Delete playbook and start over
  *
  * Install: ln -s /path/to/pi-prompt-playbook-boost ~/.pi/agent/extensions/pi-prompt-playbook-boost
@@ -611,6 +612,61 @@ export default function promptPlaybookBoostExtension(pi: ExtensionAPI) {
         }
       } catch (e) {
         ctx.ui.notify(`⚡ Refresh failed: ${e}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("boost-full-scan", {
+    description: "Deep scan of ALL project commits and regenerate playbook",
+    handler: async (_args: string | undefined, ctx: ExtensionCommandContext) => {
+      if (!state?.setupComplete) {
+        ctx.ui.notify("⚡ No playbook found. Run /boost-first-setup first.", "warning");
+        return;
+      }
+
+      const ok = await ctx.ui.confirm(
+        "⚡ Full Scan",
+        "This will scan every commit in the project history. This may take a while on large repos. Continue?",
+      );
+      if (!ok) return;
+
+      ctx.ui.notify("⚡ Starting full project scan (all commits)...", "info");
+      ctx.ui.setStatus("boost", "⚡ Boost (full scan...)");
+
+      try {
+        const gitResult = await analyzeGitHistory(exec, 0);
+        const codeResult = await analyzeCodebase(ctx.cwd, exec);
+
+        const sessionsDir = join(ctx.cwd, ".pi", "sessions");
+        let sessionResult;
+        try {
+          sessionResult = await analyzeSessionHistory(sessionsDir);
+        } catch {
+          sessionResult = null;
+        }
+
+        const prompt = generatePlaybookPrompt(gitResult, sessionResult, codeResult);
+        const summary = buildAnalysisSummary(gitResult, sessionResult, codeResult);
+
+        await ctx.waitForIdle();
+        pi.sendUserMessage(
+          `Regenerate my project playbook based on a FULL scan of all ${gitResult.totalCommits} commits. ` +
+          `Keep any manually added rules from the existing playbook at ${join(boostDir, "playbook.md")}. ` +
+          `Write the updated playbook to that file.\n\n${prompt}`,
+        );
+
+        ctx.ui.notify(`⚡ Full scan analysis (${gitResult.totalCommits} commits):\n${summary}`, "info");
+
+        const hash = await getLastCommitHash(exec);
+        if (hash && state) {
+          state.lastScanHash = hash;
+          await saveState();
+        }
+
+        ctx.ui.setStatus("boost", await buildStatusText());
+      } catch (e) {
+        ctx.ui.notify(`⚡ Full scan failed: ${e}`, "error");
+        ctx.ui.setStatus("boost", await buildStatusText());
       }
     },
   });

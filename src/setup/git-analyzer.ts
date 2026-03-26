@@ -215,15 +215,20 @@ async function fetchCommits(
   exec: ExecFn,
   limit: number
 ): Promise<CommitInfo[]> {
-  const result = await exec("git", [
+  const args = [
     "log",
     "--numstat",
     "--date=short",
     `--pretty=format:${GIT_LOG_FORMAT}`,
     "--no-renames",
-    "-n",
-    String(limit),
-  ]);
+  ];
+
+  // limit <= 0 means "all commits"
+  if (limit > 0) {
+    args.push("-n", String(limit));
+  }
+
+  const result = await exec("git", args);
 
   if (result.code !== 0) return [];
   return parseGitLog(result.stdout);
