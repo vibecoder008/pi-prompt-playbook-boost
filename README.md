@@ -22,16 +22,10 @@ What the AI sees:
 ## Install
 
 ```bash
-# Clone the repo
-git clone https://github.com/user/pi-prompt-playbook-boost.git
-
-# Symlink into pi's extensions directory
-ln -s /path/to/pi-prompt-playbook-boost ~/.pi/agent/extensions/pi-prompt-playbook-boost
+pi install https://github.com/vibecoder008/pi-prompt-playbook-boost
 ```
 
-That's it. No dependencies to install. Restart pi and the extension is active.
-
-> **Quick test without installing:** `pi -e /path/to/pi-prompt-playbook-boost/src/index.ts`
+That's it. Restart pi and the extension is active.
 
 ---
 
