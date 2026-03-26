@@ -6,7 +6,7 @@
 
 ## What This Extension Does (One Paragraph)
 
-When you install pi-prompt-playbook-boost in a project and run `/boost-first-setup`, it scans your git history, past pi sessions, and codebase to build a **project-specific playbook** — a living document that captures what makes prompts succeed or fail in THIS project. When you later type `/boost <message>`, relevant playbook sections are injected into the system prompt and your message is lightly restructured — no extra LLM call. After each interaction, the extension tracks what happened (turns, tool errors, retries) and uses that data to update the playbook. Over time, it learns the optimal way to communicate with the AI for your specific project.
+When you install pi-prompt-playbook-boost in a project and run `/boost-first-setup`, it scans your git history, past pi sessions, and codebase to build a **project-specific playbook** — a living document that captures what makes prompts succeed or fail in THIS project. When you later type `/boost <message>`, the extension makes one LLM call to rewrite your prompt using relevant playbook context, then places both the improved prompt and a visible `<boost-context>` block in the editor for review. After each interaction, the extension tracks what happened (turns, tool errors, retries) and uses that data to update the playbook. Over time, it learns the optimal way to communicate with the AI for your specific project.
 
 ---
 
@@ -55,17 +55,17 @@ Boost: ⚡ Starting project analysis...
 ```
 User:  /boost add a payment form with Stripe integration
 
-Boost: ⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
+Boost: [Cancellable loader shown while LLM rewrites the prompt]
+
+       ⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
           Review the prompt, then press Enter to send. Ctrl+Shift+X to revert.
 
-       [Editor now contains the rewritten prompt — user can review/edit]
+       [Editor now contains:]
+       - The LLM-rewritten prompt (restructured with playbook knowledge)
+       - A visible <boost-context> block with selected playbook sections
 
-User:  [presses Enter to send, or Ctrl+Shift+X to revert to original]
-
-       [On send, the system prompt is injected with playbook context:]
-       - Project Identity, Prompt Structure, Mandatory Checklist, Stats
-       - Top 3 relevant sections by keyword match
-       - Linter config, import aliases, CI verification commands
+User:  [reviews/edits the prompt, then presses Enter to send,
+        or Ctrl+Shift+X to revert to original]
 ```
 
 ### Commands
@@ -239,23 +239,25 @@ If the project has zero commits:
 
 ## 4. Boost Phase — Two-Step Flow
 
-**Source files:** `index.ts`, `playbook.ts`
+**Source files:** `index.ts`, `playbook.ts`, `rewriter.ts`
 
 When the user types `/boost add a payment form`:
 
-### Step 1: Intercept and rewrite (`input` event → `handled`)
+### Step 1: Intercept and rewrite via LLM (`input` event → `handled`)
 
 The extension intercepts `/boost <message>` via `pi.on("input")`. If no playbook exists, it warns the user.
 
 Otherwise it:
-1. Selects relevant playbook sections (keyword match)
-2. Stores `pendingInjection` (consumed when user actually sends)
-3. Builds the boosted prompt text
-4. Stores the original prompt for revert
-5. Calls `ctx.ui.setEditorText(boostedText)` to place the rewritten prompt in the editor
-6. Returns `{ action: "handled" }` — nothing is sent yet
+1. Selects relevant playbook sections (keyword match — see Step 3)
+2. Calls the LLM via `complete()` from `@mariozechner/pi-ai` to rewrite the user's prompt using the selected playbook sections as context (handled by `src/rewriter.ts`)
+3. While the LLM rewrites, a cancellable `BorderedLoader` is shown via `ctx.ui.custom()`. If the user cancels, the boost is aborted and the original prompt is restored
+4. If the LLM rewrite fails (network error, timeout, etc.), falls back to the original prompt with playbook context appended
+5. Builds the editor text: the rewritten prompt followed by a visible `<boost-context>` block containing the selected playbook sections
+6. Stores the original prompt for revert
+7. Calls `ctx.ui.setEditorText(boostedText)` to place everything in the editor
+8. Returns `{ action: "handled" }` — nothing is sent yet
 
-The user sees the boosted prompt in the editor and a notification:
+The user sees the rewritten prompt and context in the editor, plus a notification:
 
 ```
 ⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
@@ -264,26 +266,27 @@ The user sees the boosted prompt in the editor and a notification:
 
 ### Step 2: User reviews and sends
 
-The user can:
-- **Press Enter** → the `input` event fires again, the extension detects `boostedPromptInEditor` flag, clears it, and returns `{ action: "continue" }`. The text goes through normally. `before_agent_start` injects the pending playbook context.
-- **Edit the prompt** before pressing Enter — the user's edits are preserved. The playbook injection still happens.
-- **Press `Ctrl+Shift+X`** → registered shortcut reverts the editor to the original prompt, clears `pendingInjection`, and cancels tracking.
+The user can review both the LLM-rewritten prompt and the `<boost-context>` block before sending.
+
+- **Press Enter** → the `input` event fires again, the extension detects `boostedPromptInEditor` flag, clears it, and returns `{ action: "continue" }`. The full editor text (rewritten prompt + boost-context) goes through as the user message.
+- **Edit the prompt** before pressing Enter — the user's edits are preserved, including modifications to the boost-context block.
+- **Press `Ctrl+Shift+X`** → registered shortcut reverts the editor to the original prompt and cancels tracking.
 
 ### Step 3: Smart-Load Relevant Sections
 
 The playbook is parsed into sections by `## ` headings. Each section's keywords are extracted (lowercase, stop words removed, words >2 chars).
 
-**Always injected:** Project Identity, Prompt Structure, Mandatory Checklist, Stats.
+**Always included:** Project Identity, Prompt Structure, Mandatory Checklist, Stats.
 
-**Conditionally injected:** Top 3 sections by keyword overlap score (normalized by `√section_keyword_count` to avoid bias toward large sections). If no keywords match, the top 3 sections are included anyway.
+**Conditionally included:** Top 3 sections by keyword overlap score (normalized by `√section_keyword_count` to avoid bias toward large sections). If no keywords match, the top 3 sections are included anyway.
 
-This keeps injection to ~2–4KB.
+This keeps the boost-context to ~2–4KB.
 
-### Step 4: Inject (`before_agent_start` event)
+### Step 4: Visible context in editor text
 
-Selected sections are wrapped in a `<boost-context source="project-playbook">` XML block and appended to the system prompt. One-shot — cleared after injection.
+Selected sections are wrapped in a `<boost-context source="project-playbook">` XML block and placed in the editor text after the rewritten prompt. The user can see and edit both before sending.
 
-**No extra LLM call.** The model sees the playbook in the system prompt and follows it.
+**One LLM call per boost** (via `complete()`) to rewrite the prompt. The playbook context is visible in the editor, not hidden in the system prompt.
 
 ### Step 5: Track
 
@@ -297,6 +300,14 @@ An `InteractionRecord` is created with: prompt text, sections used, timestamp, s
 - Shows `⚡ Reverted to original prompt.`
 
 If no boosted prompt is pending, the shortcut does nothing.
+
+### Cancellable Loader
+
+While the LLM rewrites the prompt, a `BorderedLoader` component is displayed via `ctx.ui.custom()`. The loader supports cancellation — if the user cancels during the rewrite, the boost is aborted, the original prompt is restored to the editor, and no interaction tracking begins.
+
+### Fallback Behavior
+
+If the LLM rewrite call fails for any reason (network error, timeout, model unavailable), the extension falls back gracefully: it uses the original prompt text with the `<boost-context>` block appended. The user still gets playbook context — just without the prompt rewriting.
 
 ---
 
@@ -413,11 +424,11 @@ interface InteractionRecord {
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Source Files (12 files, ~3500 lines)
+### Source Files (13 files, ~3500 lines)
 
 | Module | Files | LLM Calls | When |
 |--------|-------|-----------|------|
-| **Core** | `index.ts`, `types.ts`, `playbook.ts` | 0 | Always |
+| **Core** | `index.ts`, `types.ts`, `playbook.ts`, `rewriter.ts` | 1 (prompt rewrite) | `/boost` |
 | **Setup** | `setup/git-analyzer.ts`, `setup/session-analyzer.ts`, `setup/codebase-analyzer.ts`, `setup/playbook-generator.ts` | 1 (synthesis) | `/boost-first-setup`, `/boost-refresh` |
 | **Learning** | `learning/commit-scanner.ts`, `learning/scorer.ts`, `learning/updater.ts`, `learning/history.ts` | 0 | `session_start`, `session_shutdown` |
 
@@ -447,10 +458,11 @@ interface InteractionRecord {
 }
 ```
 
-**Zero runtime dependencies.** Everything uses:
+**Zero npm runtime dependencies.** Everything uses:
 - `node:fs/promises` — file I/O
 - `node:path` — paths
 - Pi extension API — events, commands, UI, LLM access (via `sendUserMessage`)
+- `@mariozechner/pi-ai` — `complete()` for LLM prompt rewriting (pi runtime dependency, not an npm dependency)
 - `pi.exec()` — git commands, `find`
 
 Dev dependencies: `typescript`, `vitest`, `@types/node`.
@@ -459,10 +471,11 @@ Dev dependencies: `typescript`, `vitest`, `@types/node`.
 
 | API | Purpose |
 |-----|---------|
-| `pi.on("input")` | Intercept `/boost` commands, place boosted prompt in editor, pass through on second Enter |
-| `pi.on("before_agent_start")` | Inject playbook into system prompt |
+| `pi.on("input")` | Intercept `/boost` commands, LLM-rewrite prompt, place boosted prompt + context in editor, pass through on second Enter |
 | `pi.registerShortcut()` | `Ctrl+Shift+X` to revert boosted prompt |
-| `ctx.ui.setEditorText()` | Place boosted prompt in editor without sending |
+| `ctx.ui.setEditorText()` | Place rewritten prompt + boost-context in editor without sending |
+| `ctx.ui.custom()` | Show cancellable `BorderedLoader` during LLM prompt rewrite |
+| `ctx.model` / `ctx.modelRegistry` | Access current model for LLM prompt rewriting via `complete()` |
 | `pi.on("session_start")` | Load state, scan for new commits |
 | `pi.on("session_shutdown")` | Score interactions, scan commits, update stats |
 | `pi.on("turn_end")` | Count turns per interaction |
@@ -514,7 +527,7 @@ Dev dependencies: `typescript`, `vitest`, `@types/node`.
 |---------|---------|
 | AST parsing (tree-sitter) | File reading + config parsing is sufficient for stack/convention detection |
 | Vector embeddings / RAG | Playbook is small enough (~2–4KB injected) to fit in system prompt directly |
-| Direct API calls to LLM providers | Use pi's own model via system prompt injection |
+| Direct API calls to LLM providers | Use pi's `complete()` from `@mariozechner/pi-ai` — no direct provider API keys or HTTP calls |
 | Cross-project learning | Each project has its own playbook. Share via git. |
 | Git diff analysis | Security risk — diffs can expose removed secrets |
 | External doc fetching | Supply chain risk, staleness. Deferred to future version. |
@@ -525,7 +538,7 @@ Dev dependencies: `typescript`, `vitest`, `@types/node`.
 
 1. **Playbook size → Smart loading.** Full playbook on disk, but only inject relevant sections based on keyword matching. Always-inject set (4 sections) + top 3 by relevance. Keeps context to ~2–4KB.
 
-2. **LLM approach → System prompt injection.** No extra LLM call per boost. Playbook injected via `before_agent_start`, user prompt restructured via `input` transform. Zero additional cost.
+2. **LLM approach → One call per boost for prompt rewriting.** The extension makes one `complete()` call per `/boost` to rewrite the user's prompt using playbook context. The rewritten prompt and a visible `<boost-context>` block are placed in the editor for review. This replaces the previous system prompt injection approach — the user now sees exactly what the model will receive.
 
 3. **Privacy → Ask during setup.** Configures `.gitignore` based on answer.
 

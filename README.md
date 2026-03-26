@@ -6,9 +6,7 @@
 
 When you ask an AI to write code, it doesn't know anything about *your* project — your file structure, your coding style, or the mistakes that keep happening. You end up repeating yourself every time.
 
-This extension fixes that. It scans your project once, builds a cheat sheet (called a **playbook**), and automatically adds that knowledge to every prompt you send. The AI gets smarter about your project without you doing extra work.
-
-**No extra cost.** The playbook is added to your normal prompt — there are no additional AI calls.
+This extension fixes that. It scans your project once, builds a cheat sheet (called a **playbook**), and when you use `/boost`, an LLM rewrites your prompt to be clearer and better structured using that playbook knowledge. You see the rewritten prompt and the selected context right in the editor before anything is sent, so you're always in control.
 
 ### Before boost
 
@@ -22,13 +20,13 @@ AI sees:   just your message — knows nothing about your project
 ```
 You type:  /boost add a payment form with Stripe
 
-AI sees your message PLUS:
-  ✦ Your tech stack (React, Prisma, Tailwind...)
-  ✦ Your coding rules (import style, error handling...)
-  ✦ Your linter and formatter settings
-  ✦ Your CI/CD commands for testing
-  ✦ Files that always need to change together
-  ✦ Mistakes that keep happening in your project
+Your editor shows:
+  ✦ A rewritten prompt — clearer, better structured, informed by your playbook
+  ✦ A visible <boost-context> block with the relevant playbook sections:
+      your tech stack, coding rules, linter settings, co-change rules,
+      known failure patterns, and anything else that applies
+
+You review everything, tweak if you want, then hit Enter.
 ```
 
 ---
@@ -85,15 +83,39 @@ Just add `/boost` before any message:
 /boost add a settings page with user preferences
 ```
 
-The extension rewrites your prompt with project knowledge and puts it in the editor for you to review:
+The extension makes a quick LLM call to rewrite your prompt using playbook knowledge. Then it puts the result in your editor so you can review it before sending:
 
 ```
 ⚡ Boosted with: Conventions, Co-Change Rules, Known Failure Patterns
    Review the prompt, then press Enter to send. Ctrl+Shift+X to revert.
 ```
 
+Here's what your editor might look like after boosting:
+
+```
+Create a user preferences settings page at src/app/settings/page.tsx.
+Use the existing AppLayout wrapper and follow the form pattern in
+src/components/forms/. Validate inputs with zod. Use the AppError class
+for error handling. Run `npm test` before considering it done.
+
+<boost-context>
+## Conventions
+- Use `@/` import aliases
+- All errors go through the `AppError` class
+- Forms use zod for validation
+
+## Co-Change Rules
+- When adding a new page, also update src/app/routes.ts
+
+## Known Failure Patterns
+- Settings pages often forget to handle the "loading" state
+</boost-context>
+```
+
+The rewritten prompt at the top is what the LLM produced from your original message plus the playbook. The `<boost-context>` block shows exactly which playbook sections were included. Both are visible and editable.
+
 - **Press Enter** — send the boosted prompt
-- **Edit it first** — tweak anything you want before sending
+- **Edit it first** — tweak the rewritten prompt or the context before sending
 - **Press `Ctrl+Shift+X`** — go back to your original prompt
 
 ### Step 3: That's it
@@ -127,12 +149,12 @@ The extension learns in the background as you work. It watches for new patterns 
 └─────────┬───────────┘
           │
           ▼
-┌──────────────────────────────────────────┐
-│  1. Load your playbook                   │
-│  2. Pick the parts relevant to your msg  │
-│  3. Add them to the prompt the AI sees   │
-│  4. Send to AI (same call, no extra cost)│
-└──────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  1. Load your playbook                                │
+│  2. LLM rewrites your prompt using playbook knowledge │
+│  3. Rewritten prompt + <boost-context> shown in editor│
+│  4. You review, edit if needed, then send             │
+└───────────────────────────────────────────────────────┘
 ```
 
 ### What's in the playbook?
@@ -258,7 +280,7 @@ Everything the extension creates lives in `.pi/boost/` inside your project:
 ## FAQ
 
 **Does this cost extra money?**
-No. Setup makes one AI call to create the playbook. After that, `/boost` just adds text to your normal prompt — zero extra API calls.
+A little. Setup makes one LLM call to create the playbook. Each `/boost` makes one additional LLM call to rewrite your prompt. These rewrite calls are short and cheap — typically just a few hundred tokens — but they're not free. For most usage, the cost is negligible.
 
 **My project has no git history. Does it still work?**
 Yes. It builds the playbook from your code and config files alone. Git patterns fill in as you make commits.
